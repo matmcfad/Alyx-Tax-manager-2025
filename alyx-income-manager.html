@@ -9,7 +9,6 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/date-fns@3.0.0/index.min.js"></script>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -51,12 +50,9 @@
             tax2024Total: 25664,
             quarterlyPayment: 6416,
             standardDeduction: 14600,
-            minimumCushion: 1000,
-            startingCheckingBalance: 1200,
             startingTaxSavingsBalance: 0,
             startDate: "2025-01-01",
             currentYear: 2025,
-            taxSavingsRate: 0.30,
             businessName: "Alyx Steadman Therapy PLLC"
         };
 
@@ -143,6 +139,91 @@
                 adjustedIncome,
                 totalTax: seTax + incomeTax,
                 bracketDetails
+            };
+        }
+
+        /**
+         * Calculate smart weekly tax savings based on current progress and projections
+         * @param {number} weeklyIncome - This week's income
+         * @param {number} ytdIncome - Year-to-date income
+         * @param {number} weeksElapsed - Number of weeks completed
+         * @param {number} taxSavingsBalance - Current tax savings balance
+         * @param {object} settings - App settings
+         * @returns {object} { amount, percentage, status, explanation }
+         */
+        function calculateSmartTaxSavings(weeklyIncome, ytdIncome, weeksElapsed, taxSavingsBalance, quarterlyPaid, settings) {
+            // If it's the very first week, use safe harbor amount as baseline
+            if (weeksElapsed === 0) {
+                const weeklyTarget = settings.tax2024Total / 52;
+                return {
+                    amount: weeklyTarget,
+                    percentage: (weeklyTarget / weeklyIncome) * 100,
+                    status: 'baseline',
+                    explanation: 'First week - using safe harbor baseline',
+                    projectedTax: settings.tax2024Total
+                };
+            }
+
+            // Calculate projected annual income based on current pace
+            const avgWeekly = ytdIncome / weeksElapsed;
+            const projectedAnnual = avgWeekly * 52;
+
+            // Calculate projected 2025 tax
+            const projectedTax = calculateTotalTax(projectedAnnual, settings.standardDeduction);
+
+            // We need enough to cover the HIGHER of:
+            // 1. Safe harbor (2024 tax) - to avoid penalties
+            // 2. Projected 2025 tax - to avoid owing at tax time
+            const totalNeeded = Math.max(settings.tax2024Total, projectedTax.totalTax);
+
+            // How much more do we need to save?
+            // Account for both current savings AND quarterly payments already made
+            const stillNeed = totalNeeded - (taxSavingsBalance + quarterlyPaid);
+
+            // Weeks remaining (including current week)
+            const weeksRemaining = 52 - weeksElapsed;
+
+            // Calculate weekly target
+            let weeklyTarget = 0;
+            let status = 'on-track';
+            let explanation = '';
+
+            if (weeksRemaining <= 0) {
+                // End of year
+                weeklyTarget = Math.max(0, stillNeed);
+                status = stillNeed > 0 ? 'behind' : 'complete';
+                explanation = stillNeed > 0 ? 'Final catch-up needed' : 'Year complete!';
+            } else {
+                weeklyTarget = stillNeed / weeksRemaining;
+
+                if (weeklyTarget < 0) {
+                    weeklyTarget = 0;
+                    status = 'ahead';
+                    explanation = `You're ahead of target! No tax savings needed this week.`;
+                } else {
+                    const percentage = (weeklyTarget / weeklyIncome) * 100;
+                    if (percentage < 25) {
+                        status = 'on-track';
+                        explanation = `On track - saving ${percentage.toFixed(0)}% this week.`;
+                    } else if (percentage < 35) {
+                        status = 'slightly-behind';
+                        explanation = `Slightly behind - need to save ${percentage.toFixed(0)}% this week.`;
+                    } else {
+                        status = 'behind';
+                        explanation = `Behind on taxes - need to save ${percentage.toFixed(0)}% to catch up.`;
+                    }
+                }
+            }
+
+            return {
+                amount: Math.max(0, weeklyTarget),
+                percentage: weeklyIncome > 0 ? (weeklyTarget / weeklyIncome) * 100 : 0,
+                status,
+                explanation,
+                projectedTax: projectedTax.totalTax,
+                totalNeeded,
+                stillNeed: Math.max(0, stillNeed),
+                weeksRemaining
             };
         }
 
@@ -245,20 +326,66 @@
             return upcomingBills.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
         }
 
-        /**
-         * Calculate business reserve needed
-         */
-        function calculateBusinessReserve(currentBalance, upcomingBills, minimumCushion) {
-            const totalUpcoming = upcomingBills.reduce((sum, bill) => sum + bill.amount, 0);
-            const targetBalance = Math.max(totalUpcoming, minimumCushion);
-            const reserveNeeded = Math.max(0, targetBalance - currentBalance);
+        // Rolling 4-week business expense calculation
+        function calculateRolling4WeekBusiness(weekDate, expenseBudget, dueDates) {
+            if (!expenseBudget || !dueDates || Object.keys(dueDates).length === 0) {
+                return {
+                    weeklyAmount: 0,
+                    totalIn4Weeks: 0,
+                    billsFound: []
+                };
+            }
+
+            const startDate = new Date(weekDate);
+            const endDate = new Date(startDate);
+            endDate.setDate(endDate.getDate() + 28); // 4 weeks including current week
+
+            const billsIn4Weeks = [];
+
+            // Check each expense
+            for (const [expense, dueDay] of Object.entries(dueDates)) {
+                if (!expenseBudget[expense]) continue;
+
+                // Check current month
+                const currentMonth = startDate.getMonth();
+                const currentYear = startDate.getFullYear();
+                const currentMonthDue = new Date(currentYear, currentMonth, dueDay);
+
+                if (currentMonthDue >= startDate && currentMonthDue <= endDate) {
+                    const amount = expenseBudget[expense][currentMonth] || 0;
+                    if (amount > 0) {
+                        billsIn4Weeks.push({
+                            expense,
+                            dueDate: currentMonthDue.toISOString().split('T')[0],
+                            amount
+                        });
+                    }
+                }
+
+                // Check next month
+                const nextMonth = (currentMonth + 1) % 12;
+                const nextYear = nextMonth === 0 ? currentYear + 1 : currentYear;
+                const nextMonthDue = new Date(nextYear, nextMonth, dueDay);
+
+                if (nextMonthDue >= startDate && nextMonthDue <= endDate) {
+                    const amount = expenseBudget[expense][nextMonth] || 0;
+                    if (amount > 0) {
+                        billsIn4Weeks.push({
+                            expense,
+                            dueDate: nextMonthDue.toISOString().split('T')[0],
+                            amount
+                        });
+                    }
+                }
+            }
+
+            const totalIn4Weeks = billsIn4Weeks.reduce((sum, bill) => sum + bill.amount, 0);
+            const weeklyAmount = totalIn4Weeks / 4;
 
             return {
-                currentBalance,
-                upcomingBills,
-                totalUpcoming,
-                targetBalance,
-                reserveNeeded
+                weeklyAmount,
+                totalIn4Weeks,
+                billsFound: billsIn4Weeks
             };
         }
 
@@ -317,6 +444,7 @@
                     complete: (results) => {
                         try {
                             const budget = {};
+                            const dueDates = {};
                             const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
                             results.data.forEach(row => {
@@ -327,9 +455,13 @@
                                     const value = parseFloat(row[month] || 0);
                                     return isNaN(value) ? 0 : value;
                                 });
+
+                                // Read due day from CSV (default to 1 if not provided or invalid)
+                                const dueDay = parseInt(row.DueDay || 1);
+                                dueDates[expenseName] = (dueDay >= 1 && dueDay <= 31) ? dueDay : 1;
                             });
 
-                            resolve(budget);
+                            resolve({ budget, dueDates });
                         } catch (error) {
                             reject(error);
                         }
@@ -367,16 +499,16 @@
         }
 
         function generateExpenseTemplate() {
-            const template = `Expense,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec
-SimplePractice,87,87,87,87,87,87,87,87,87,87,87,87
-Rent,410,410,410,410,410,410,410,410,410,410,410,410
-Phone,123,123,123,123,123,123,123,123,123,123,123,123
-Internet,55,55,93,222,93,93,93,93,108,143,108,108
-Supervision,360,360,425,510,425,425,350,350,350,870,870,870
-Books,10,10,10,10,10,10,10,10,10,10,10,10
-Trainings,600,75,75,75,75,75,75,75,75,75,75,75
-Insurance,0,0,0,0,292,0,0,0,0,0,0,0
-License,0,0,0,0,0,95,0,41,0,0,0,200`;
+            const template = `Expense,DueDay,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec
+SimplePractice,1,87,87,87,87,87,87,87,87,87,87,87,87
+Rent,1,410,410,410,410,410,410,410,410,410,410,410,410
+Phone,15,123,123,123,123,123,123,123,123,123,123,123,123
+Internet,20,55,55,93,222,93,93,93,93,108,143,108,108
+Supervision,5,360,360,425,510,425,425,350,350,350,870,870,870
+Books,10,10,10,10,10,10,10,10,10,10,10,10,10
+Trainings,1,600,75,75,75,75,75,75,75,75,75,75,75
+Insurance,1,0,0,0,0,292,0,0,0,0,0,0,0
+License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             const blob = new Blob([template], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -563,9 +695,7 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [tax2024, setTax2024] = useState(appData.settings.tax2024Total);
             const [csvFile, setCsvFile] = useState(null);
             const [dueDates, setDueDates] = useState({});
-            const [startingChecking, setStartingChecking] = useState(appData.settings.startingCheckingBalance);
             const [startingTaxSavings, setStartingTaxSavings] = useState(appData.settings.startingTaxSavingsBalance);
-            const [minimumCushion, setMinimumCushion] = useState(appData.settings.minimumCushion);
 
             const handleCsvUpload = async (e) => {
                 const file = e.target.files[0];
@@ -573,16 +703,11 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 const text = await file.text();
                 try {
-                    const budget = await parseExpenseCSV(text);
+                    const { budget, dueDates: parsedDueDates } = await parseExpenseCSV(text);
                     setCsvFile(budget);
-
-                    // Initialize due dates for each expense
-                    const initialDueDates = {};
-                    Object.keys(budget).forEach(expense => {
-                        initialDueDates[expense] = 1;
-                    });
-                    setDueDates(initialDueDates);
+                    setDueDates(parsedDueDates);
                 } catch (error) {
+                    console.error('Error parsing CSV:', error);
                     alert('Error parsing CSV file. Please check the format.');
                 }
             };
@@ -594,9 +719,7 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                         ...prev.settings,
                         tax2024Total: tax2024,
                         quarterlyPayment: Math.round(tax2024 / 4),
-                        startingCheckingBalance: startingChecking,
-                        startingTaxSavingsBalance: startingTaxSavings,
-                        minimumCushion: minimumCushion
+                        startingTaxSavingsBalance: startingTaxSavings
                     },
                     expenses: {
                         budget: csvFile || {},
@@ -763,26 +886,12 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                             </div>
                         )}
 
-                        {(setupStep === 4 && !csvFile) || setupStep === 5) && (
+                        {((setupStep === 4 && !csvFile) || setupStep === 5) && (
                             <div>
                                 <h2 className="text-2xl font-bold text-gray-800 mb-6">
-                                    Step {csvFile ? '4' : '3'}: Starting Balances
+                                    Step {csvFile ? '4' : '3'}: Starting Tax Savings Balance
                                 </h2>
                                 <div className="space-y-4 mb-6">
-                                    <div>
-                                        <label className="block text-gray-700 mb-2 font-semibold">
-                                            Business Checking Balance
-                                        </label>
-                                        <div className="relative">
-                                            <span className="absolute left-3 top-3 text-gray-500">$</span>
-                                            <input
-                                                type="number"
-                                                value={startingChecking}
-                                                onChange={(e) => setStartingChecking(parseFloat(e.target.value) || 0)}
-                                                className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                            />
-                                        </div>
-                                    </div>
                                     <div>
                                         <label className="block text-gray-700 mb-2 font-semibold">
                                             Tax Savings Balance
@@ -796,20 +905,9 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                 className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                                             />
                                         </div>
-                                    </div>
-                                    <div>
-                                        <label className="block text-gray-700 mb-2 font-semibold">
-                                            Minimum Cushion to Maintain in Business Checking
-                                        </label>
-                                        <div className="relative">
-                                            <span className="absolute left-3 top-3 text-gray-500">$</span>
-                                            <input
-                                                type="number"
-                                                value={minimumCushion}
-                                                onChange={(e) => setMinimumCushion(parseFloat(e.target.value) || 0)}
-                                                className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                            />
-                                        </div>
+                                        <p className="text-sm text-gray-600 mt-2">
+                                            Enter the amount you currently have saved for taxes (if any).
+                                        </p>
                                     </div>
                                 </div>
                                 <div className="flex gap-4">
@@ -859,6 +957,15 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [showBusinessDetails, setShowBusinessDetails] = useState(false);
             const [showTaxDetails, setShowTaxDetails] = useState(false);
             const [calculatedSplit, setCalculatedSplit] = useState(null);
+            const [catchUpMode, setCatchUpMode] = useState(false);
+            const [missingWeekIncomes, setMissingWeekIncomes] = useState({});
+            const [catchUpCsvFile, setCatchUpCsvFile] = useState(null);
+            const [showQuarterlyWarning, setShowQuarterlyWarning] = useState(false);
+            const [unpaidQuarters, setUnpaidQuarters] = useState([]);
+            const [isManualAdjust, setIsManualAdjust] = useState(false);
+            const [manualBusiness, setManualBusiness] = useState('');
+            const [manualTax, setManualTax] = useState('');
+            const [manualPaycheck, setManualPaycheck] = useState('');
 
             const currentWeek = getCurrentWeek();
             const currentWeekData = appData.weeks.find(w => w.week === currentWeek);
@@ -876,7 +983,6 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                 .filter(q => q.paid)
                 .reduce((sum, q) => sum + q.amount, 0);
             const taxSavingsBalance = appData.settings.startingTaxSavingsBalance + ytdTaxSavings - quarterlyPaid;
-            const businessCheckingBalance = appData.settings.startingCheckingBalance + ytdBusiness;
 
             // Calculate projections
             const averageWeekly = weeksElapsed > 0 ? ytdIncome / weeksElapsed : 0;
@@ -899,32 +1005,51 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return;
                 }
 
-                // Calculate business reserve
-                const upcomingBills = calculateUpcomingBills(
-                    new Date(),
+                // Calculate business expenses using rolling 4-week method
+                const rolling4Week = calculateRolling4WeekBusiness(
+                    currentWeekData.date,
                     appData.expenses.budget,
-                    appData.expenses.dueDates,
-                    14
-                );
-                const businessReserve = calculateBusinessReserve(
-                    businessCheckingBalance,
-                    upcomingBills,
-                    appData.settings.minimumCushion
+                    appData.expenses.dueDates
                 );
 
-                // Calculate tax (30% rule)
-                const tax = income * appData.settings.taxSavingsRate;
+                // Calculate business expenses first (capped at 50% of income)
+                const business = Math.min(rolling4Week.weeklyAmount, income * 0.5);
+
+                // Calculate smart tax savings
+                const smartTax = calculateSmartTaxSavings(
+                    income,
+                    ytdIncome,
+                    weeksElapsed,
+                    taxSavingsBalance,
+                    quarterlyPaid,
+                    appData.settings
+                );
+
+                // Cap tax at what's available after business expenses
+                // Never save more than what's left after business
+                const maxTaxAvailable = income - business;
+                const tax = Math.min(smartTax.amount, maxTaxAvailable);
 
                 // Calculate paycheck (what's left)
-                const business = Math.min(businessReserve.reserveNeeded, income * 0.5); // Cap at 50% of income
                 const paycheck = Math.max(0, income - business - tax);
+
+                // Add warning if we had to cap the tax
+                const isTaxCapped = smartTax.amount > maxTaxAvailable;
+                const cappedSmartTax = {
+                    ...smartTax,
+                    amount: tax,
+                    isCapped: isTaxCapped,
+                    idealAmount: smartTax.amount,
+                    shortfall: isTaxCapped ? smartTax.amount - tax : 0
+                };
 
                 setCalculatedSplit({
                     income,
                     business,
                     tax,
                     paycheck,
-                    businessReserve
+                    rolling4Week,
+                    smartTax: cappedSmartTax
                 });
                 setShowSplit(true);
             };
@@ -944,6 +1069,194 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                 setCalculatedSplit(null);
 
                 alert('Week recorded successfully! 🎉');
+            };
+
+            const handleEnterMissingWeeks = () => {
+                // Check if any missing weeks span quarterly payment due dates
+                const affectedQuarters = [];
+
+                if (missingWeeks.length > 0) {
+                    const firstMissingWeek = missingWeeks[0];
+                    const lastMissingWeek = missingWeeks[missingWeeks.length - 1];
+                    const firstDate = new Date(firstMissingWeek.date);
+                    const lastDate = new Date(lastMissingWeek.date);
+
+                    // Check each quarterly payment
+                    appData.quarterlyPayments.forEach((payment, index) => {
+                        const dueDate = new Date(QUARTERLY_DUE_DATES[index].due);
+
+                        // If the due date falls within or before the missing weeks range
+                        // and the payment is NOT paid, add it to affected quarters
+                        if (dueDate >= firstDate && dueDate <= lastDate && !payment.paid) {
+                            affectedQuarters.push({
+                                quarter: payment.quarter,
+                                dueDate: QUARTERLY_DUE_DATES[index].due,
+                                period: QUARTERLY_DUE_DATES[index].period
+                            });
+                        }
+                    });
+                }
+
+                // If there are unpaid quarterly payments in the range, show warning
+                if (affectedQuarters.length > 0) {
+                    setUnpaidQuarters(affectedQuarters);
+                    setShowQuarterlyWarning(true);
+                } else {
+                    // No warning needed, proceed with catch-up mode
+                    openCatchUpMode();
+                }
+            };
+
+            const openCatchUpMode = () => {
+                setCatchUpMode(true);
+                // Initialize income values for missing weeks
+                const initialIncomes = {};
+                missingWeeks.forEach(w => {
+                    initialIncomes[w.week] = '';
+                });
+                setMissingWeekIncomes(initialIncomes);
+            };
+
+            const handleCatchUpCsvUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                setCatchUpCsvFile(file);
+
+                // Parse CSV file
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        try {
+                            const incomes = {};
+                            let errorMessages = [];
+
+                            results.data.forEach((row, index) => {
+                                // Clean and parse week number
+                                const weekStr = (row.Week || row.week || '').toString().trim();
+                                const week = parseInt(weekStr);
+
+                                // Clean and parse income (remove $, commas, and whitespace)
+                                const incomeStr = (row.Income || row.income || '').toString().trim();
+                                const cleanedIncome = incomeStr.replace(/[$,\s]/g, '');
+                                const income = parseFloat(cleanedIncome);
+
+                                // Validate week number
+                                if (isNaN(week) || week < 1 || week > 52) {
+                                    errorMessages.push(`Row ${index + 2}: Invalid week number "${weekStr}"`);
+                                    return;
+                                }
+
+                                // Validate income value
+                                if (isNaN(income) || income < 0) {
+                                    errorMessages.push(`Row ${index + 2}: Invalid income "${incomeStr}"`);
+                                    return;
+                                }
+
+                                // Check if this week is actually missing
+                                const isMissing = missingWeeks.some(w => w.week === week);
+                                if (!isMissing) {
+                                    errorMessages.push(`Row ${index + 2}: Week ${week} already has data or is in the future`);
+                                    return;
+                                }
+
+                                incomes[week] = income.toString();
+                            });
+
+                            if (errorMessages.length > 0) {
+                                alert('CSV Upload Errors:\n\n' + errorMessages.join('\n'));
+                                return;
+                            }
+
+                            if (Object.keys(incomes).length === 0) {
+                                alert('No valid data found in CSV. Make sure your CSV has "Week" and "Income" columns.');
+                                return;
+                            }
+
+                            // Merge with existing incomes (CSV takes precedence)
+                            setMissingWeekIncomes(prev => ({
+                                ...prev,
+                                ...incomes
+                            }));
+
+                            alert(`Successfully loaded ${Object.keys(incomes).length} week(s) from CSV!`);
+
+                        } catch (error) {
+                            alert('Error parsing CSV: ' + error.message);
+                        }
+                    },
+                    error: (error) => {
+                        alert('Error reading CSV file: ' + error.message);
+                    }
+                });
+            };
+
+            const handleRecordMissingWeeks = () => {
+                // Calculate splits for each week and record them
+                // Process in week number order to get accurate running totals
+                const sortedEntries = Object.entries(missingWeekIncomes)
+                    .sort(([a], [b]) => parseInt(a) - parseInt(b));
+
+                let recordedCount = 0;
+                let runningYtdIncome = ytdIncome;
+                let runningWeeksElapsed = weeksElapsed;
+                let runningTaxBalance = taxSavingsBalance;
+
+                sortedEntries.forEach(([weekNum, income]) => {
+                    const incomeValue = parseFloat(income);
+                    if (!isNaN(incomeValue) && incomeValue > 0) {
+                        // Get the actual date of this week to calculate bills from that time
+                        const weekData = appData.weeks.find(w => w.week === parseInt(weekNum));
+                        const weekDate = new Date(weekData.date);
+
+                        // Calculate business expenses using rolling 4-week method
+                        // As if entering this week on its actual date
+                        const rolling4Week = calculateRolling4WeekBusiness(
+                            weekDate,
+                            appData.expenses.budget,
+                            appData.expenses.dueDates
+                        );
+
+                        // Cap business at 50% of income
+                        const business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
+
+                        // Calculate smart tax for this week
+                        const smartTax = calculateSmartTaxSavings(
+                            incomeValue,
+                            runningYtdIncome,
+                            runningWeeksElapsed,
+                            runningTaxBalance,
+                            quarterlyPaid,
+                            appData.settings
+                        );
+
+                        // Cap tax at what's available (income - business)
+                        const tax = Math.min(smartTax.amount, incomeValue - business);
+                        const paycheck = incomeValue - business - tax;
+
+                        updateWeek(parseInt(weekNum), {
+                            income: incomeValue,
+                            business: business,
+                            tax: tax,
+                            paycheck: paycheck
+                        });
+
+                        // Update running totals for next week's calculation
+                        runningYtdIncome += incomeValue;
+                        runningWeeksElapsed += 1;
+                        runningTaxBalance += tax;
+
+                        recordedCount++;
+                    }
+                });
+
+                if (recordedCount > 0) {
+                    alert(`${recordedCount} week(s) recorded successfully! 🎉`);
+                }
+
+                setCatchUpMode(false);
+                setMissingWeekIncomes({});
             };
 
             return (
@@ -967,15 +1280,216 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <li>... and {missingWeeks.length - 5} more</li>
                                 )}
                             </ul>
-                            <button className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 transition-colors">
+                            <button
+                                onClick={handleEnterMissingWeeks}
+                                className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 transition-colors"
+                            >
                                 Enter Missing Weeks
                             </button>
                         </div>
                     )}
 
+                    {/* Quarterly Payment Warning Modal */}
+                    {showQuarterlyWarning && (
+                        <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6 mb-6">
+                            <h3 className="text-lg font-bold text-yellow-800 mb-3">⚠️ QUARTERLY TAX PAYMENTS</h3>
+                            <p className="text-yellow-700 mb-4">
+                                The weeks you're entering span these quarterly payment due dates:
+                            </p>
+                            <ul className="list-disc list-inside text-yellow-700 mb-4 space-y-1">
+                                {unpaidQuarters.map(q => (
+                                    <li key={q.quarter}>
+                                        <strong>{q.quarter}</strong> ({q.period}) - Due {formatDate(q.dueDate)} - <span className="text-red-600 font-semibold">NOT PAID</span>
+                                    </li>
+                                ))}
+                            </ul>
+                            <div className="bg-white border border-yellow-300 rounded-lg p-4 mb-4">
+                                <p className="text-sm text-gray-700">
+                                    <strong>For accurate tax calculations:</strong> If you've already paid these quarterly taxes in real life,
+                                    you should mark them as PAID in the Tax Tracking screen before entering historical weeks.
+                                    This ensures the smart tax calculation doesn't think you're further behind than you actually are.
+                                </p>
+                            </div>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => {
+                                        setShowQuarterlyWarning(false);
+                                        setCurrentScreen('taxes');
+                                    }}
+                                    className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                >
+                                    Go to Tax Tracking
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setShowQuarterlyWarning(false);
+                                        openCatchUpMode();
+                                    }}
+                                    className="flex-1 bg-yellow-600 text-white px-4 py-3 rounded-lg hover:bg-yellow-700 transition-colors"
+                                >
+                                    Continue Anyway
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Catch-Up Mode */}
+                    {catchUpMode && (
+                        <div className="bg-white rounded-lg shadow-md p-6 border-2 border-blue-500">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">CATCH-UP MODE: ENTER MISSING WEEKS</h2>
+                            <p className="text-gray-600 mb-4">
+                                Enter income for each week below, or upload a CSV file to bulk-import your data.
+                            </p>
+
+                            {/* CSV Upload Option */}
+                            <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-4 mb-6">
+                                <h3 className="font-semibold text-blue-800 mb-2">📄 Option 1: Upload CSV File</h3>
+                                <p className="text-sm text-blue-700 mb-3">
+                                    Upload a CSV with columns: Week,Income
+                                </p>
+                                <div className="flex gap-3 items-center">
+                                    <label className="flex-1">
+                                        <input
+                                            type="file"
+                                            accept=".csv"
+                                            onChange={handleCatchUpCsvUpload}
+                                            className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 file:cursor-pointer"
+                                        />
+                                    </label>
+                                    <button
+                                        onClick={() => {
+                                            // Download template CSV
+                                            const template = 'Week,Income\n36,2500\n37,2800\n38,2600';
+                                            const blob = new Blob([template], { type: 'text/csv' });
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = 'catch-up-template.csv';
+                                            a.click();
+                                            URL.revokeObjectURL(url);
+                                        }}
+                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm whitespace-nowrap"
+                                    >
+                                        Download Template
+                                    </button>
+                                </div>
+                                {catchUpCsvFile && (
+                                    <p className="text-sm text-green-700 mt-2">
+                                        ✓ Loaded: {catchUpCsvFile.name}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="text-center text-gray-500 text-sm mb-4">- OR -</div>
+
+                            <h3 className="font-semibold text-gray-800 mb-3">✍️ Option 2: Enter Manually</h3>
+
+                            <div className="space-y-4 mb-6">
+                                {missingWeeks.map(week => (
+                                    <div key={week.week} className="border border-gray-300 rounded-lg p-4">
+                                        <h3 className="font-semibold text-gray-800 mb-2">
+                                            Week {week.week} ({formatDate(week.date)})
+                                        </h3>
+                                        <div className="flex gap-3 items-center">
+                                            <label className="text-gray-700">Income:</label>
+                                            <div className="relative flex-1">
+                                                <span className="absolute left-3 top-2 text-gray-500">$</span>
+                                                <input
+                                                    type="number"
+                                                    value={missingWeekIncomes[week.week] || ''}
+                                                    onChange={(e) => setMissingWeekIncomes(prev => ({
+                                                        ...prev,
+                                                        [week.week]: e.target.value
+                                                    }))}
+                                                    className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                                    placeholder="0.00"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg mb-4">
+                                <h3 className="font-semibold text-blue-800 mb-2">Summary</h3>
+                                <div className="text-blue-700">
+                                    {(() => {
+                                        const totalIncome = Object.values(missingWeekIncomes).reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
+
+                                        // Calculate splits using smart tax and rolling 4-week business (simulating sequential weeks)
+                                        const sortedEntries = Object.entries(missingWeekIncomes).sort(([a], [b]) => parseInt(a) - parseInt(b));
+                                        let runningYtd = ytdIncome;
+                                        let runningWeeks = weeksElapsed;
+                                        let runningTax = taxSavingsBalance;
+                                        let totalTax = 0;
+                                        let totalBusiness = 0;
+
+                                        sortedEntries.forEach(([weekNum, income]) => {
+                                            const incomeValue = parseFloat(income) || 0;
+                                            if (incomeValue > 0) {
+                                                // Get the week's date
+                                                const weekData = appData.weeks.find(w => w.week === parseInt(weekNum));
+                                                const weekDate = new Date(weekData.date);
+
+                                                // Calculate business using rolling 4-week method
+                                                const rolling4Week = calculateRolling4WeekBusiness(
+                                                    weekDate,
+                                                    appData.expenses.budget,
+                                                    appData.expenses.dueDates
+                                                );
+                                                const business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
+
+                                                const smartTax = calculateSmartTaxSavings(incomeValue, runningYtd, runningWeeks, runningTax, quarterlyPaid, appData.settings);
+                                                // Cap tax at available amount
+                                                const tax = Math.min(smartTax.amount, incomeValue - business);
+                                                totalBusiness += business;
+                                                totalTax += tax;
+                                                runningYtd += incomeValue;
+                                                runningWeeks += 1;
+                                                runningTax += tax;
+                                            }
+                                        });
+
+                                        const totalPaycheck = totalIncome - totalBusiness - totalTax;
+                                        const avgTaxRate = totalIncome > 0 ? (totalTax / totalIncome) * 100 : 0;
+                                        const avgBusinessRate = totalIncome > 0 ? (totalBusiness / totalIncome) * 100 : 0;
+
+                                        return (
+                                            <>
+                                                <div>Total Income: ${totalIncome.toFixed(2)}</div>
+                                                <div>Business (~{avgBusinessRate.toFixed(1)}%): ${totalBusiness.toFixed(2)}</div>
+                                                <div>Tax (Smart ~{avgTaxRate.toFixed(1)}%): ${totalTax.toFixed(2)}</div>
+                                                <div>Paycheck: ${totalPaycheck.toFixed(2)}</div>
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+                            </div>
+
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={handleRecordMissingWeeks}
+                                    className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                >
+                                    ✓ Record These Weeks
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setCatchUpMode(false);
+                                        setMissingWeekIncomes({});
+                                        setCatchUpCsvFile(null);
+                                    }}
+                                    className="flex-1 bg-gray-200 text-gray-700 px-4 py-3 rounded-lg hover:bg-gray-300 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     {/* YTD Summary */}
                     <div className="bg-white rounded-lg shadow-md p-6">
-                        <h2 className="text-xl font-bold text-gray-800 mb-4">💰 YEAR TO DATE SUMMARY</h2>
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">📊 YEAR TO DATE SUMMARY</h2>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                             <div>
                                 <div className="text-sm text-gray-600">Total Income</div>
@@ -984,15 +1498,15 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </div>
                             </div>
                             <div>
-                                <div className="text-sm text-gray-600">Tax Savings</div>
+                                <div className="text-sm text-gray-600">Total Tax</div>
                                 <div className="text-2xl font-bold text-green-600 number-mono">
-                                    ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    ${ytdTaxSavings.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </div>
                             </div>
                             <div>
-                                <div className="text-sm text-gray-600">Business Checking</div>
+                                <div className="text-sm text-gray-600">Total Business</div>
                                 <div className="text-2xl font-bold text-blue-600 number-mono">
-                                    ${businessCheckingBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    ${ytdBusiness.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </div>
                             </div>
                             <div>
@@ -1000,6 +1514,20 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 <div className="text-2xl font-bold text-purple-600 number-mono">
                                     ${ytdPaychecks.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Current Tax Savings Balance */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">💰 CURRENT TAX SAVINGS BALANCE</h2>
+                        <div className="flex flex-col items-center">
+                            <div className="text-sm text-gray-600 mb-2">Tax Savings Account</div>
+                            <div className="text-4xl font-bold text-green-600 number-mono mb-3">
+                                ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                            </div>
+                            <div className="text-xs text-gray-500 text-center">
+                                This is what you should currently have in your tax savings account
                             </div>
                         </div>
                     </div>
@@ -1071,17 +1599,12 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </span>
                             </div>
                             <div>
-                                <span className="text-gray-600">Additional needed: </span>
+                                <span className="text-gray-600">Additional due at end of year: </span>
                                 <span className={`font-semibold number-mono ${
-                                    projectedTax.totalTax > appData.settings.tax2024Total ? 'text-red-600' : 'text-green-600'
+                                    projectedTax.totalTax > appData.settings.tax2024Total ? 'text-blue-800' : 'text-green-600'
                                 }`}>
                                     ~${Math.max(0, projectedTax.totalTax - appData.settings.tax2024Total).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </span>
-                            </div>
-                            <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                                <p className="text-blue-800">
-                                    Don't worry - keep saving {(appData.settings.taxSavingsRate * 100).toFixed(0)}% each week and you'll catch up!
-                                </p>
                             </div>
                         </div>
                     </div>
@@ -1155,26 +1678,17 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         <div className="mt-3 p-4 bg-gray-50 rounded-lg text-sm">
                                             <div className="space-y-2">
                                                 <div>
-                                                    <span className="text-gray-600">Current checking balance:</span>
-                                                    <span className="ml-2 font-semibold number-mono">
-                                                        ${businessCheckingBalance.toFixed(2)}
-                                                    </span>
-                                                </div>
-                                                <div>
-                                                    <span className="text-gray-600">Minimum cushion target:</span>
-                                                    <span className="ml-2 font-semibold number-mono">
-                                                        ${appData.settings.minimumCushion.toFixed(2)}
-                                                    </span>
-                                                </div>
-                                                <div className="mt-3">
-                                                    <div className="font-semibold text-gray-700 mb-2">Bills due in next 2 weeks:</div>
-                                                    {calculatedSplit.businessReserve.upcomingBills.map((bill, i) => (
+                                                    <div className="font-semibold text-gray-700 mb-2">Bills due in next 4 weeks:</div>
+                                                    {calculatedSplit.rolling4Week.billsFound.map((bill, i) => (
                                                         <div key={i} className="ml-4 text-gray-600">
-                                                            • {bill.dueDateFormatted} - {bill.expense}: ${bill.amount.toFixed(2)}
+                                                            • {bill.dueDate} - {bill.expense}: ${bill.amount.toFixed(2)}
                                                         </div>
                                                     ))}
                                                     <div className="mt-2 font-semibold">
-                                                        Total upcoming: ${calculatedSplit.businessReserve.totalUpcoming.toFixed(2)}
+                                                        Total in next 4 weeks: ${calculatedSplit.rolling4Week.totalIn4Weeks.toFixed(2)}
+                                                    </div>
+                                                    <div className="text-sm text-gray-600 mt-1">
+                                                        Weekly amount: ${calculatedSplit.rolling4Week.weeklyAmount.toFixed(2)} (÷ 4)
                                                     </div>
                                                 </div>
                                             </div>
@@ -1187,10 +1701,22 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <div className="flex justify-between items-start mb-2">
                                         <div>
                                             <div className="text-lg font-semibold text-gray-800">
-                                                💾 Tax Savings ({(appData.settings.taxSavingsRate * 100).toFixed(0)}%):
+                                                💾 Tax Savings ({calculatedSplit.smartTax.percentage.toFixed(1)}%):
                                                 <span className="ml-2 number-mono">${calculatedSplit.tax.toFixed(2)}</span>
                                             </div>
-                                            <div className="text-sm text-gray-600">For quarterly payments + year-end</div>
+                                            <div className={`text-sm font-medium ${
+                                                calculatedSplit.smartTax.status === 'ahead' ? 'text-green-600' :
+                                                calculatedSplit.smartTax.status === 'on-track' ? 'text-blue-600' :
+                                                calculatedSplit.smartTax.status === 'slightly-behind' ? 'text-yellow-600' :
+                                                'text-red-600'
+                                            }`}>
+                                                {calculatedSplit.smartTax.explanation}
+                                            </div>
+                                            {calculatedSplit.smartTax.isCapped && (
+                                                <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                                                    <strong>⚠️ Warning:</strong> Ideally need ${calculatedSplit.smartTax.idealAmount.toFixed(2)} for taxes, but only ${calculatedSplit.tax.toFixed(2)} available after business expenses. Shortfall: ${calculatedSplit.smartTax.shortfall.toFixed(2)} this week.
+                                                </div>
+                                            )}
                                         </div>
                                         <button
                                             onClick={() => setShowTaxDetails(!showTaxDetails)}
@@ -1203,19 +1729,27 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     {showTaxDetails && (
                                         <div className="mt-3 p-4 bg-gray-50 rounded-lg text-sm">
                                             <div className="space-y-2">
-                                                <div className="font-semibold text-gray-700">Simple rule: Save {(appData.settings.taxSavingsRate * 100).toFixed(0)}% of all income</div>
-                                                <div>
-                                                    This week: ${calculatedSplit.income.toFixed(2)} × {appData.settings.taxSavingsRate} = ${calculatedSplit.tax.toFixed(2)}
+                                                <div className="font-semibold text-gray-700">Smart Tax Calculation</div>
+                                                <div className="space-y-1">
+                                                    <div>• Weeks completed: {weeksElapsed}</div>
+                                                    <div>• Weeks remaining: {calculatedSplit.smartTax.weeksRemaining}</div>
+                                                    <div>• YTD income: ${ytdIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                    <div>• Current tax savings: ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                 </div>
                                                 <div className="mt-3">
-                                                    <div className="font-semibold text-gray-700 mb-1">WHY {(appData.settings.taxSavingsRate * 100).toFixed(0)}%?</div>
-                                                    <div>• Self-employment tax: ~15.3%</div>
-                                                    <div>• Income tax: ~12-22% (your bracket)</div>
-                                                    <div>• Total: ~{(appData.settings.taxSavingsRate * 100).toFixed(0)}% average</div>
+                                                    <div className="font-semibold text-gray-700 mb-1">What you need by year-end:</div>
+                                                    <div>• Safe harbor (2024 tax): ${appData.settings.tax2024Total.toLocaleString()}</div>
+                                                    <div>• Projected 2025 tax: ${calculatedSplit.smartTax.projectedTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                    <div className="font-semibold mt-1">• Target (higher of both): ${calculatedSplit.smartTax.totalNeeded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                 </div>
                                                 <div className="mt-3">
-                                                    <div>Current tax savings: ${taxSavingsBalance.toFixed(2)}</div>
-                                                    <div>After this week: ${(taxSavingsBalance + calculatedSplit.tax).toFixed(2)}</div>
+                                                    <div className="font-semibold text-gray-700">Still need to save: ${calculatedSplit.smartTax.stillNeed.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                    <div className="text-xs text-gray-600 mt-1">
+                                                        Divided by {calculatedSplit.smartTax.weeksRemaining} weeks = ${calculatedSplit.smartTax.amount.toFixed(2)}/week
+                                                    </div>
+                                                </div>
+                                                <div className="mt-3">
+                                                    <div>After this week: ${(taxSavingsBalance + calculatedSplit.tax).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                 </div>
                                             </div>
                                         </div>
@@ -1242,12 +1776,155 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </button>
                                 <button
                                     onClick={() => {
-                                        setShowSplit(false);
-                                        setCalculatedSplit(null);
+                                        setIsManualAdjust(true);
+                                        setManualBusiness(calculatedSplit.business.toFixed(2));
+                                        setManualTax(calculatedSplit.tax.toFixed(2));
+                                        setManualPaycheck(calculatedSplit.paycheck.toFixed(2));
                                     }}
                                     className="flex-1 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors"
                                 >
                                     ✏️ Adjust Amounts
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Manual Adjustment Mode */}
+                    {isManualAdjust && calculatedSplit && (
+                        <div className="bg-white rounded-lg shadow-md p-6 border-2 border-orange-500">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">MANUALLY ADJUST AMOUNTS</h2>
+
+                            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                                <div className="text-sm text-gray-600">Income Received:</div>
+                                <div className="text-2xl font-bold text-gray-800 number-mono">
+                                    ${calculatedSplit.income.toFixed(2)}
+                                </div>
+                            </div>
+
+                            <div className="space-y-4 mb-4">
+                                <div>
+                                    <label className="block text-gray-700 font-semibold mb-2">🏢 Business Expenses:</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={manualBusiness}
+                                            onChange={(e) => {
+                                                setManualBusiness(e.target.value);
+                                                const b = parseFloat(e.target.value) || 0;
+                                                const t = parseFloat(manualTax) || 0;
+                                                setManualPaycheck((calculatedSplit.income - b - t).toFixed(2));
+                                            }}
+                                            className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-gray-700 font-semibold mb-2">💾 Tax Savings:</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={manualTax}
+                                            onChange={(e) => {
+                                                setManualTax(e.target.value);
+                                                const b = parseFloat(manualBusiness) || 0;
+                                                const t = parseFloat(e.target.value) || 0;
+                                                setManualPaycheck((calculatedSplit.income - b - t).toFixed(2));
+                                            }}
+                                            className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-gray-700 font-semibold mb-2">💵 Paycheck:</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={manualPaycheck}
+                                            onChange={(e) => {
+                                                setManualPaycheck(e.target.value);
+                                            }}
+                                            className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg bg-gray-50"
+                                            disabled
+                                        />
+                                    </div>
+                                    <div className="text-xs text-gray-500 mt-1">Auto-calculated: Income - Business - Tax</div>
+                                </div>
+                            </div>
+
+                            {(() => {
+                                const b = parseFloat(manualBusiness) || 0;
+                                const t = parseFloat(manualTax) || 0;
+                                const p = parseFloat(manualPaycheck) || 0;
+                                const total = b + t + p;
+                                const diff = Math.abs(total - calculatedSplit.income);
+                                const isValid = diff < 0.01;
+
+                                return (
+                                    <>
+                                        <div className={`p-3 rounded-lg mb-4 ${isValid ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                                            <div className="text-sm">
+                                                <strong>Total:</strong> ${total.toFixed(2)}
+                                                {!isValid && (
+                                                    <span className="text-red-600 ml-2">
+                                                        (Should equal ${calculatedSplit.income.toFixed(2)})
+                                                    </span>
+                                                )}
+                                                {isValid && <span className="text-green-600 ml-2">✓ Amounts match!</span>}
+                                            </div>
+                                        </div>
+                                        {p < 0 && (
+                                            <div className="p-3 bg-yellow-50 border border-yellow-300 rounded-lg mb-4 text-sm">
+                                                <strong>⚠️ Note:</strong> Negative paycheck (${p.toFixed(2)}) means you're transferring money FROM your personal account back to business/tax accounts. This is valid if you're catching up on savings.
+                                            </div>
+                                        )}
+                                    </>
+                                );
+                            })()}
+
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={() => {
+                                        const b = parseFloat(manualBusiness) || 0;
+                                        const t = parseFloat(manualTax) || 0;
+                                        const p = parseFloat(manualPaycheck) || 0;
+                                        const total = b + t + p;
+                                        const diff = Math.abs(total - calculatedSplit.income);
+
+                                        if (diff >= 0.01) {
+                                            alert('Amounts must add up to total income!');
+                                            return;
+                                        }
+
+                                        updateWeek(currentWeek, {
+                                            income: calculatedSplit.income,
+                                            business: b,
+                                            tax: t,
+                                            paycheck: p
+                                        });
+
+                                        setWeeklyIncome('');
+                                        setShowSplit(false);
+                                        setCalculatedSplit(null);
+                                        setIsManualAdjust(false);
+
+                                        alert('Week recorded with custom amounts! 🎉');
+                                    }}
+                                    className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                >
+                                    ✓ Record with Adjustments
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setIsManualAdjust(false);
+                                    }}
+                                    className="flex-1 bg-gray-200 text-gray-700 px-4 py-3 rounded-lg hover:bg-gray-300 transition-colors"
+                                >
+                                    ← Back to Auto
                                 </button>
                             </div>
                         </div>
@@ -1274,6 +1951,12 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
         // ============================================================================
 
         function History({ appData, updateWeek }) {
+            const [editingWeek, setEditingWeek] = useState(null);
+            const [editIncome, setEditIncome] = useState('');
+            const [editBusiness, setEditBusiness] = useState('');
+            const [editTax, setEditTax] = useState('');
+            const [editPaycheck, setEditPaycheck] = useState('');
+
             const completedWeeks = appData.weeks.filter(w => w.income !== null).reverse();
 
             return (
@@ -1281,12 +1964,33 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <div className="flex justify-between items-center mb-4">
                             <h1 className="text-2xl font-bold text-gray-800">📅 WEEKLY INCOME HISTORY</h1>
-                            <button
-                                onClick={() => exportWeeksToCSV(appData.weeks)}
-                                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
-                            >
-                                📥 Export to CSV
-                            </button>
+                            <div className="flex gap-2">
+                                {completedWeeks.length > 0 && (
+                                    <button
+                                        onClick={() => {
+                                            const latestWeek = completedWeeks[0]; // Already reversed, so first is latest
+                                            if (confirm(`Delete Week ${latestWeek.week} (${formatDate(latestWeek.date)})?\n\nIncome: $${latestWeek.income.toFixed(2)}\n\nThis cannot be undone.`)) {
+                                                updateWeek(latestWeek.week, {
+                                                    income: null,
+                                                    business: null,
+                                                    tax: null,
+                                                    paycheck: null
+                                                });
+                                                alert('Week deleted! ✓');
+                                            }
+                                        }}
+                                        className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors text-sm"
+                                    >
+                                        🗑️ Delete Latest Week
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => exportWeeksToCSV(appData.weeks)}
+                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                                >
+                                    📥 Export to CSV
+                                </button>
+                            </div>
                         </div>
                         <p className="text-gray-600">
                             {completedWeeks.length} of 52 weeks recorded
@@ -1302,36 +2006,131 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                             Week {week.week} ({formatDate(week.date)})
                                         </h3>
                                     </div>
-                                    <button className="text-blue-600 hover:underline text-sm">
+                                    <button
+                                        onClick={() => {
+                                            setEditingWeek(week.week);
+                                            setEditIncome(week.income.toFixed(2));
+                                            setEditBusiness(week.business.toFixed(2));
+                                            setEditTax(week.tax.toFixed(2));
+                                            setEditPaycheck(week.paycheck.toFixed(2));
+                                        }}
+                                        className="text-blue-600 hover:underline text-sm"
+                                    >
                                         ✏️ Edit
                                     </button>
                                 </div>
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                    <div>
-                                        <div className="text-sm text-gray-600">Income</div>
-                                        <div className="text-lg font-semibold text-gray-800 number-mono">
-                                            ${week.income.toFixed(2)}
+
+                                {editingWeek === week.week ? (
+                                    <div className="space-y-4">
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                            <div>
+                                                <label className="block text-sm text-gray-600 mb-1">Income</label>
+                                                <div className="relative">
+                                                    <span className="absolute left-2 top-2 text-gray-500 text-sm">$</span>
+                                                    <input
+                                                        type="number"
+                                                        value={editIncome}
+                                                        onChange={(e) => setEditIncome(e.target.value)}
+                                                        className="w-full pl-6 pr-2 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm text-gray-600 mb-1">Business</label>
+                                                <div className="relative">
+                                                    <span className="absolute left-2 top-2 text-gray-500 text-sm">$</span>
+                                                    <input
+                                                        type="number"
+                                                        value={editBusiness}
+                                                        onChange={(e) => setEditBusiness(e.target.value)}
+                                                        className="w-full pl-6 pr-2 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm text-gray-600 mb-1">Tax</label>
+                                                <div className="relative">
+                                                    <span className="absolute left-2 top-2 text-gray-500 text-sm">$</span>
+                                                    <input
+                                                        type="number"
+                                                        value={editTax}
+                                                        onChange={(e) => setEditTax(e.target.value)}
+                                                        className="w-full pl-6 pr-2 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm text-gray-600 mb-1">Paycheck</label>
+                                                <div className="relative">
+                                                    <span className="absolute left-2 top-2 text-gray-500 text-sm">$</span>
+                                                    <input
+                                                        type="number"
+                                                        value={editPaycheck}
+                                                        onChange={(e) => setEditPaycheck(e.target.value)}
+                                                        className="w-full pl-6 pr-2 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex gap-3 mt-4">
+                                            <button
+                                                onClick={() => {
+                                                    const income = parseFloat(editIncome) || 0;
+                                                    const business = parseFloat(editBusiness) || 0;
+                                                    const tax = parseFloat(editTax) || 0;
+                                                    const paycheck = parseFloat(editPaycheck) || 0;
+
+                                                    updateWeek(week.week, {
+                                                        income,
+                                                        business,
+                                                        tax,
+                                                        paycheck
+                                                    });
+
+                                                    setEditingWeek(null);
+                                                    alert('Week updated! ✓');
+                                                }}
+                                                className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                                            >
+                                                ✓ Save Changes
+                                            </button>
+                                            <button
+                                                onClick={() => setEditingWeek(null)}
+                                                className="flex-1 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors text-sm"
+                                            >
+                                                Cancel
+                                            </button>
                                         </div>
                                     </div>
-                                    <div>
-                                        <div className="text-sm text-gray-600">→ Business</div>
-                                        <div className="text-lg font-semibold text-blue-600 number-mono">
-                                            ${week.business.toFixed(2)}
+                                ) : (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                        <div>
+                                            <div className="text-sm text-gray-600">Income</div>
+                                            <div className="text-lg font-semibold text-gray-800 number-mono">
+                                                ${week.income.toFixed(2)}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="text-sm text-gray-600">→ Business</div>
+                                            <div className="text-lg font-semibold text-blue-600 number-mono">
+                                                ${week.business.toFixed(2)}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="text-sm text-gray-600">→ Tax</div>
+                                            <div className="text-lg font-semibold text-green-600 number-mono">
+                                                ${week.tax.toFixed(2)}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="text-sm text-gray-600">→ Paycheck</div>
+                                            <div className="text-lg font-semibold text-purple-600 number-mono">
+                                                ${week.paycheck.toFixed(2)}
+                                            </div>
                                         </div>
                                     </div>
-                                    <div>
-                                        <div className="text-sm text-gray-600">→ Tax</div>
-                                        <div className="text-lg font-semibold text-green-600 number-mono">
-                                            ${week.tax.toFixed(2)}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <div className="text-sm text-gray-600">→ Paycheck</div>
-                                        <div className="text-lg font-semibold text-purple-600 number-mono">
-                                            ${week.paycheck.toFixed(2)}
-                                        </div>
-                                    </div>
-                                </div>
+                                )}
                             </div>
                         ))}
 
@@ -1378,7 +2177,7 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                     {/* Quarterly Payments */}
                     <div className="bg-white rounded-lg shadow-md p-6">
-                        <h2 className="text-xl font-bold text-gray-800 mb-4">QUARTERLY PAYMENTS (SAFE HARBOR)</h2>
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">QUARTERLY PAYMENTS</h2>
                         <p className="text-gray-600 mb-4">
                             Based on 2024 tax: ${totalQuarterly.toLocaleString()}
                         </p>
@@ -1418,8 +2217,19 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                     </div>
                                                 )}
                                                 {payment.paid && (
-                                                    <div className="text-sm text-green-600 mt-1">
-                                                        ✅ PAID {payment.datePaid && `on ${formatDate(payment.datePaid)}`}
+                                                    <div className="mt-2 space-y-2">
+                                                        <div className="text-sm text-green-600">
+                                                            ✅ PAID
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <label className="text-xs text-gray-600">Date paid:</label>
+                                                            <input
+                                                                type="date"
+                                                                value={payment.datePaid?.split('T')[0] || ''}
+                                                                onChange={(e) => updateQuarterlyPayment(payment.quarter, true, e.target.value)}
+                                                                className="text-sm px-2 py-1 border border-gray-300 rounded focus:border-blue-500 focus:outline-none"
+                                                            />
+                                                        </div>
                                                     </div>
                                                 )}
                                             </div>
@@ -1533,9 +2343,9 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </span>
                             </div>
                             <div>
-                                <span className="text-gray-600">Additional needed:</span>
+                                <span className="text-gray-600">Additional beyond estimated quaterly payments:</span>
                                 <span className={`ml-2 font-semibold number-mono ${
-                                    additionalNeeded > 0 ? 'text-red-600' : 'text-green-600'
+                                    additionalNeeded > 0 ? 'text-gray-700' : 'text-green-600'
                                 }`}>
                                     ~${additionalNeeded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </span>
@@ -1547,21 +2357,21 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </span>
                             </div>
                             <div className={`mt-3 p-3 rounded-lg ${
-                                taxSavingsBalance >= projectedTax.totalTax
+                                (taxSavingsBalance + quarterlyPaid) >= projectedTax.totalTax
                                     ? 'bg-green-50 text-green-700'
                                     : 'bg-yellow-50 text-yellow-700'
                             }`}>
                                 <strong>Status: </strong>
-                                {taxSavingsBalance >= projectedTax.totalTax
+                                {(taxSavingsBalance + quarterlyPaid) >= projectedTax.totalTax
                                     ? `On track! You have enough saved. ✓`
-                                    : `Behind by ~$${(projectedTax.totalTax - taxSavingsBalance).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                                    : `Behind by ~$${(projectedTax.totalTax - (quarterlyPaid + taxSavingsBalance)).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
                                 }
                             </div>
                         </div>
 
                         <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                             <p className="text-blue-800 text-sm">
-                                Keep saving {(appData.settings.taxSavingsRate * 100).toFixed(0)}% each week - you'll catch up as more income comes in!
+                                Keep saving each week using the tax calculation - you'll catch up as more income comes in!
                             </p>
                         </div>
                     </div>
@@ -1592,8 +2402,6 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [showMonthlyBreakdown, setShowMonthlyBreakdown] = useState(false);
             const [newBillName, setNewBillName] = useState('');
             const [newBillDay, setNewBillDay] = useState(1);
-            const [editingBalance, setEditingBalance] = useState(false);
-            const [newBalance, setNewBalance] = useState(0);
 
             const handleCsvUpload = async (e) => {
                 const file = e.target.files[0];
@@ -1601,17 +2409,10 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 const text = await file.text();
                 try {
-                    const budget = await parseExpenseCSV(text);
+                    const { budget, dueDates } = await parseExpenseCSV(text);
 
-                    // Keep existing due dates, add new ones for new expenses
-                    const updatedDueDates = { ...appData.expenses.dueDates };
-                    Object.keys(budget).forEach(expense => {
-                        if (!updatedDueDates[expense]) {
-                            updatedDueDates[expense] = 1;
-                        }
-                    });
-
-                    updateExpenses(budget, updatedDueDates);
+                    // CSV is the source of truth - use due dates from the file
+                    updateExpenses(budget, dueDates);
                     alert('Budget uploaded successfully! ✓');
                 } catch (error) {
                     alert('Error parsing CSV file. Please check the format.');
@@ -1648,11 +2449,6 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                 setNewBillDay(1);
             };
 
-            const handleUpdateBalance = () => {
-                updateSettings({ startingCheckingBalance: newBalance });
-                setEditingBalance(false);
-            };
-
             // Calculate monthly totals
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             const monthlyTotals = monthNames.map((_, i) => {
@@ -1666,10 +2462,9 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
             const averageMonthly = monthlyTotals.reduce((sum, val) => sum + val, 0) / 12;
             const totalYear = monthlyTotals.reduce((sum, val) => sum + val, 0);
 
-            // Calculate business checking balance
+            // Calculate YTD business for display
             const completedWeeks = appData.weeks.filter(w => w.income !== null);
             const ytdBusiness = completedWeeks.reduce((sum, w) => sum + (w.business || 0), 0);
-            const businessCheckingBalance = appData.settings.startingCheckingBalance + ytdBusiness;
 
             return (
                 <div className="space-y-6">
@@ -1682,12 +2477,18 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                         <h2 className="text-xl font-bold text-gray-800 mb-4">MONTHLY BUDGET</h2>
 
                         <div className="space-y-3 mb-4">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                Upload or Re-upload Budget CSV
+                            </label>
                             <input
                                 type="file"
                                 accept=".csv"
                                 onChange={handleCsvUpload}
                                 className="w-full p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-500 cursor-pointer"
                             />
+                            <p className="text-xs text-gray-500">
+                                Upload a new CSV to update your monthly budget. Due dates will be set to day 1 for new expenses.
+                            </p>
                             <div className="flex gap-2">
                                 <button
                                     onClick={generateExpenseTemplate}
@@ -1752,114 +2553,18 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                     {/* Bill Due Dates */}
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h2 className="text-xl font-bold text-gray-800 mb-4">BILL DUE DATES</h2>
-                        <p className="text-gray-600 mb-4">Configure when each bill is due:</p>
+                        <p className="text-gray-600 mb-4">Due dates are set in your CSV file:</p>
 
                         <div className="space-y-3 mb-6">
                             {Object.entries(appData.expenses.dueDates).map(([expense, day]) => (
                                 <div key={expense} className="flex items-center gap-4">
-                                    <label className="flex-1 text-gray-700">{expense}:</label>
-                                    <select
-                                        value={day}
-                                        onChange={(e) => handleUpdateDueDate(expense, e.target.value)}
-                                        className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                    >
-                                        {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
-                                            <option key={d} value={d}>
-                                                {d}{d === 1 ? 'st' : d === 2 ? 'nd' : d === 3 ? 'rd' : 'th'}
-                                            </option>
-                                        ))}
-                                    </select>
+                                    <span className="flex-1 text-gray-700">{expense}:</span>
+                                    <span className="text-lg font-semibold text-gray-800">
+                                        Day {day}
+                                    </span>
                                     <span className="text-gray-500">of month</span>
                                 </div>
                             ))}
-                        </div>
-
-                        {/* Add New Bill */}
-                        <div className="border-t pt-4">
-                            <h3 className="font-semibold mb-3">Add New Bill</h3>
-                            <div className="flex gap-3">
-                                <input
-                                    type="text"
-                                    value={newBillName}
-                                    onChange={(e) => setNewBillName(e.target.value)}
-                                    placeholder="Bill name"
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                />
-                                <select
-                                    value={newBillDay}
-                                    onChange={(e) => setNewBillDay(parseInt(e.target.value))}
-                                    className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                >
-                                    {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
-                                        <option key={d} value={d}>
-                                            {d}{d === 1 ? 'st' : d === 2 ? 'nd' : d === 3 ? 'rd' : 'th'}
-                                        </option>
-                                    ))}
-                                </select>
-                                <button
-                                    onClick={handleAddBill}
-                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
-                                >
-                                    + Add Bill
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Business Checking */}
-                    <div className="bg-white rounded-lg shadow-md p-6">
-                        <h2 className="text-xl font-bold text-gray-800 mb-4">BUSINESS CHECKING</h2>
-
-                        <div className="mb-4">
-                            <div className="text-sm text-gray-600">Current balance</div>
-                            <div className="text-3xl font-bold text-blue-600 number-mono">
-                                ${businessCheckingBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </div>
-                            <div className="text-sm text-gray-500 mt-1">
-                                Last verified: {formatDate(new Date().toISOString())}
-                            </div>
-                            {!editingBalance ? (
-                                <button
-                                    onClick={() => {
-                                        setNewBalance(businessCheckingBalance);
-                                        setEditingBalance(true);
-                                    }}
-                                    className="mt-2 text-blue-600 hover:underline text-sm"
-                                >
-                                    Update Balance
-                                </button>
-                            ) : (
-                                <div className="mt-3 flex gap-2">
-                                    <div className="relative flex-1">
-                                        <span className="absolute left-3 top-2 text-gray-500">$</span>
-                                        <input
-                                            type="number"
-                                            value={newBalance}
-                                            onChange={(e) => setNewBalance(parseFloat(e.target.value) || 0)}
-                                            className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                        />
-                                    </div>
-                                    <button
-                                        onClick={handleUpdateBalance}
-                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
-                                    >
-                                        Save
-                                    </button>
-                                    <button
-                                        onClick={() => setEditingBalance(false)}
-                                        className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors"
-                                    >
-                                        Cancel
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="border-t pt-4">
-                            <div className="text-sm text-gray-600 mb-2">Minimum cushion</div>
-                            <div className="text-xl font-bold text-gray-800 number-mono">
-                                ${appData.settings.minimumCushion.toLocaleString()}
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -1875,11 +2580,8 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [formData, setFormData] = useState({
                 tax2024Total: appData.settings.tax2024Total,
                 standardDeduction: appData.settings.standardDeduction,
-                taxSavingsRate: appData.settings.taxSavingsRate * 100,
                 businessName: appData.settings.businessName,
-                startDate: appData.settings.startDate,
-                startingCheckingBalance: appData.settings.startingCheckingBalance,
-                minimumCushion: appData.settings.minimumCushion
+                startDate: appData.settings.startDate
             });
 
             const handleSave = () => {
@@ -1887,11 +2589,8 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                     tax2024Total: parseFloat(formData.tax2024Total),
                     quarterlyPayment: Math.round(parseFloat(formData.tax2024Total) / 4),
                     standardDeduction: parseFloat(formData.standardDeduction),
-                    taxSavingsRate: parseFloat(formData.taxSavingsRate) / 100,
                     businessName: formData.businessName,
-                    startDate: formData.startDate,
-                    startingCheckingBalance: parseFloat(formData.startingCheckingBalance),
-                    minimumCushion: parseFloat(formData.minimumCushion)
+                    startDate: formData.startDate
                 });
                 setEditMode(false);
                 alert('Settings saved! ✓');
@@ -1953,10 +2652,10 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         ${appData.settings.standardDeduction.toLocaleString()}
                                     </div>
                                 </div>
-                                <div>
-                                    <div className="text-sm text-gray-600">Tax Savings Rate</div>
-                                    <div className="text-lg font-semibold">
-                                        {(appData.settings.taxSavingsRate * 100).toFixed(0)}% of weekly income
+                                <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                                    <div className="text-sm font-semibold text-blue-800">Smart Tax Mode</div>
+                                    <div className="text-sm text-blue-700 mt-1">
+                                        Tax savings calculated automatically each week based on projected annual tax and weeks remaining.
                                     </div>
                                 </div>
                                 <button
@@ -1992,18 +2691,6 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         />
                                     </div>
                                 </div>
-                                <div>
-                                    <label className="block text-sm text-gray-600 mb-1">Tax Savings Rate (%)</label>
-                                    <div className="relative">
-                                        <input
-                                            type="number"
-                                            value={formData.taxSavingsRate}
-                                            onChange={(e) => setFormData({ ...formData, taxSavingsRate: e.target.value })}
-                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                                        />
-                                        <span className="absolute right-3 top-3 text-gray-500">%</span>
-                                    </div>
-                                </div>
                                 <div className="flex gap-3">
                                     <button
                                         onClick={handleSave}
@@ -2017,11 +2704,8 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                                             setFormData({
                                                 tax2024Total: appData.settings.tax2024Total,
                                                 standardDeduction: appData.settings.standardDeduction,
-                                                taxSavingsRate: appData.settings.taxSavingsRate * 100,
                                                 businessName: appData.settings.businessName,
-                                                startDate: appData.settings.startDate,
-                                                startingCheckingBalance: appData.settings.startingCheckingBalance,
-                                                minimumCushion: appData.settings.minimumCushion
+                                                startDate: appData.settings.startDate
                                             });
                                         }}
                                         className="flex-1 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors"
@@ -2044,18 +2728,6 @@ License,0,0,0,0,0,95,0,41,0,0,0,200`;
                             <div>
                                 <div className="text-sm text-gray-600">Start Date</div>
                                 <div className="text-lg font-semibold">{appData.settings.startDate}</div>
-                            </div>
-                            <div>
-                                <div className="text-sm text-gray-600">Starting Business Checking Balance</div>
-                                <div className="text-lg font-semibold number-mono">
-                                    ${appData.settings.startingCheckingBalance.toLocaleString()}
-                                </div>
-                            </div>
-                            <div>
-                                <div className="text-sm text-gray-600">Minimum Cushion</div>
-                                <div className="text-lg font-semibold number-mono">
-                                    ${appData.settings.minimumCushion.toLocaleString()}
-                                </div>
                             </div>
                         </div>
                     </div>
