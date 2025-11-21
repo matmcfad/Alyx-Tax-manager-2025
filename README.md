@@ -13,7 +13,9 @@ A Progressive Web App for managing weekly income, business expenses, and tax sav
 - **Data Export**: Export data to CSV for your CPA or backup as JSON
 - **Transparent Calculations**: All tax calculations are auditable with detailed breakdowns
 
-## Quick Start
+## Quick Access
+
+**🌐 Use Online (Recommended)**: Visit **https://matmcfad.github.io/Alyx-Tax-manager/** and install the PWA directly from your browser!
 
 **New users**: See [QUICK-START.md](QUICK-START.md) for the fastest setup path.
 
@@ -36,7 +38,33 @@ Alyx Tax manager/
 
 ## Installation
 
-### Step 1: Create App Icons (Required)
+### Method 1: Web-Based Installation (Recommended)
+
+**🌐 Direct Access - No Setup Required!**
+
+1. Visit **https://matmcfad.github.io/Alyx-Tax-manager/** in Chrome, Edge, or Safari
+2. The app loads instantly - no downloads needed!
+3. Click the **Install** button in your browser's address bar (or go to Settings → Install App in the app)
+4. Follow your browser's prompts to install the PWA
+5. Done! The app is now installed on your device
+
+**Benefits of web-based installation:**
+- ✅ No Python or local server required
+- ✅ Automatic updates when new versions are released
+- ✅ Access from any device (just visit the URL)
+- ✅ Same offline functionality after first load
+- ✅ All data stays local on your device (uses browser storage)
+
+**After installation:**
+- Launch from Start Menu/App Drawer/Applications
+- Works completely offline after first load
+- Automatically updates when you're online
+
+### Method 2: Local Development Installation
+
+**For developers or offline-first setup:**
+
+**Step 1: Create App Icons (Required)**
 
 Before first run, you need to create two app icon files. See [ICON-INSTRUCTIONS.md](ICON-INSTRUCTIONS.md) for detailed instructions.
 
@@ -47,7 +75,7 @@ Before first run, you need to create two app icon files. See [ICON-INSTRUCTIONS.
 4. Rename `android-chrome-512x512.png` → `icon-512.png`
 5. Copy both to the app folder
 
-### Step 2: Launch the App
+**Step 2: Launch the App**
 
 **Windows:**
 - Double-click `START.bat`
@@ -61,19 +89,13 @@ Before first run, you need to create two app icon files. See [ICON-INSTRUCTIONS.
 
 **Note:** You must use the launcher scripts (not open index.html directly) for PWA features to work. PWA features require a web server, not the `file://` protocol.
 
-### Step 3: Install as Native App (Optional but Recommended)
+**Step 3: Install as Native App**
 
 1. After launching via START.bat/START.sh
 2. Go to **Settings** → **Install App** section
 3. Click **"📱 Install App"** button
 4. Follow your browser's installation prompts
 5. App installs like a native application!
-
-**Benefits of installing:**
-- Launch from Start Menu/App Drawer (no need for START.bat/START.sh)
-- Runs in its own window (no browser UI)
-- Better data persistence
-- Faster loading (offline caching)
 
 ## Getting Started
 
@@ -324,6 +346,13 @@ After first load, the app works **completely offline**.
 
 ### Updates
 
+**Web-based installation (GitHub Pages):**
+- Updates happen automatically when you're online!
+- The service worker checks for updates when you visit the app
+- Your data is safe during updates (stored separately in browser)
+- No manual download or installation needed
+
+**Local development installation:**
 When you download a new version:
 1. Replace old files with new files
 2. Your data is safe (stored separately in browser)
@@ -333,10 +362,11 @@ When you download a new version:
 ## Privacy & Security
 
 - **100% Local**: All data stored locally in your browser
-- **No Server**: No data transmitted anywhere (runs via local Python server)
+- **No Data Transmission**: No data sent to any server - everything stays on your device
 - **No Tracking**: No analytics or tracking code
 - **No Cloud**: No accounts, no sign-ups, no cloud storage
 - **Portable**: Just backup your JSON files to take your data anywhere
+- **Hosted on GitHub Pages**: The app code is delivered from GitHub, but all your financial data stays in your browser's local storage
 
 ## Support & Feedback
 
@@ -346,6 +376,9 @@ This is a custom-built application. Keep your JSON backups safe!
 
 **Q: Can I use this on multiple computers?**
 A: Yes, but you'll need to manually transfer your data using JSON backups (Settings → Backup Data).
+
+**Q: I was using localhost - where did my data go?**
+A: Browser data is stored separately for each domain. Data from `http://localhost:8000` won't appear at `https://matmcfad.github.io/Alyx-Tax-manager/`. Export your data from localhost (Settings → Backup Data), then import it at the GitHub Pages URL (Settings → Import Backup).
 
 **Q: What if I miss entering a week?**
 A: No problem! The Dashboard will alert you and you can enter missed weeks anytime.
