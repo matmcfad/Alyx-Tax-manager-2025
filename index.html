@@ -519,8 +519,31 @@
             URL.revokeObjectURL(url);
         }
 
-        function generateExpenseTemplate() {
-            const template = `Expense,DueDay,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec
+        function generateExpenseTemplate(appData = null) {
+            let csvContent;
+            let filename;
+
+            // Check if user has existing budget data
+            const hasBudget = appData && Object.keys(appData.expenses.budget).length > 0;
+
+            if (hasBudget) {
+                // Generate CSV from current budget
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                const header = 'Expense,DueDay,' + months.join(',');
+                const rows = [];
+
+                // Build rows from budget data
+                for (const [expenseName, monthlyAmounts] of Object.entries(appData.expenses.budget)) {
+                    const dueDay = appData.expenses.dueDates[expenseName] || 1;
+                    const row = `${expenseName},${dueDay},${monthlyAmounts.join(',')}`;
+                    rows.push(row);
+                }
+
+                csvContent = header + '\n' + rows.join('\n');
+                filename = 'my-expense-budget.csv';
+            } else {
+                // Use the empty template
+                csvContent = `Expense,DueDay,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec
 SimplePractice,1,87,87,87,87,87,87,87,87,87,87,87,87
 Rent,1,410,410,410,410,410,410,410,410,410,410,410,410
 Phone,15,123,123,123,123,123,123,123,123,123,123,123,123
@@ -530,12 +553,14 @@ Books,10,10,10,10,10,10,10,10,10,10,10,10,10
 Trainings,1,600,75,75,75,75,75,75,75,75,75,75,75
 Insurance,1,0,0,0,0,292,0,0,0,0,0,0,0
 License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
+                filename = 'expense-budget-template.csv';
+            }
 
-            const blob = new Blob([template], { type: 'text/csv' });
+            const blob = new Blob([csvContent], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'expense-budget-template.csv';
+            a.download = filename;
             a.click();
             URL.revokeObjectURL(url);
         }
@@ -2548,10 +2573,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             </p>
                             <div className="flex gap-2">
                                 <button
-                                    onClick={generateExpenseTemplate}
+                                    onClick={() => generateExpenseTemplate(appData)}
                                     className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
                                 >
-                                    📥 Download Template
+                                    {Object.keys(appData.expenses.budget).length > 0
+                                        ? '📥 Download Current Budget'
+                                        : '📥 Download Template'}
                                 </button>
                             </div>
                         </div>
