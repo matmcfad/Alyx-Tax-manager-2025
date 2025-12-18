@@ -293,7 +293,7 @@
             const jan4Day = jan4.getDay() || 7;
             const weekStart = new Date(year, 0, 4 - jan4Day + 1 + (weekNumber - 1) * 7);
             const friday = new Date(weekStart);
-            friday.setDate(weekStart.getDate() + 5); // Add 5 days to get Friday
+            friday.setDate(weekStart.getDate() + 4); // Monday + 4 = Friday
             return friday;
         }
 
@@ -611,7 +611,15 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 const savedData = loadFromLocalStorage();
 
                 if (savedData && savedData.settings && savedData.settings.setupComplete) {
-                    setAppData(savedData);
+                    // Migrate week dates to use correct Friday calculation
+                    const migratedData = {
+                        ...savedData,
+                        weeks: savedData.weeks.map((week, i) => ({
+                            ...week,
+                            date: getFridayOfWeek(i + 1, 2025).toISOString().split('T')[0]
+                        }))
+                    };
+                    setAppData(migratedData);
                     setIsSetupComplete(true);
                 } else {
                     // Initialize with default data
