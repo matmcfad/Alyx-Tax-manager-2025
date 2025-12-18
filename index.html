@@ -2066,10 +2066,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         <div className="bg-green-50 border-2 border-green-500 rounded-lg p-6">
                             <h2 className="text-xl font-bold text-green-800 mb-4">✅ Week {currentWeek} Already Recorded</h2>
                             <div className="space-y-2">
-                                <div>Income: <span className="font-semibold number-mono">${currentWeekData.income.toFixed(2)}</span></div>
-                                <div>Business: <span className="font-semibold number-mono">${currentWeekData.business.toFixed(2)}</span></div>
-                                <div>Tax: <span className="font-semibold number-mono">${currentWeekData.tax.toFixed(2)}</span></div>
-                                <div>Paycheck: <span className="font-semibold number-mono">${currentWeekData.paycheck.toFixed(2)}</span></div>
+                                <div>Income: <span className="font-semibold number-mono">${(currentWeekData.income || 0).toFixed(2)}</span></div>
+                                <div>Business: <span className="font-semibold number-mono">${(currentWeekData.business || 0).toFixed(2)}</span></div>
+                                <div>Tax: <span className="font-semibold number-mono">${(currentWeekData.tax || 0).toFixed(2)}</span></div>
+                                <div>Paycheck: <span className="font-semibold number-mono">${(currentWeekData.paycheck || 0).toFixed(2)}</span></div>
                             </div>
                         </div>
                     )}
@@ -2100,7 +2100,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <button
                                         onClick={() => {
                                             const latestWeek = completedWeeks[0]; // Already reversed, so first is latest
-                                            if (confirm(`Delete Week ${latestWeek.week} (${formatDate(latestWeek.date)})?\n\nIncome: $${latestWeek.income.toFixed(2)}\n\nThis cannot be undone.`)) {
+                                            if (confirm(`Delete Week ${latestWeek.week} (${formatDate(latestWeek.date)})?\n\nIncome: $${(latestWeek.income || 0).toFixed(2)}\n\nThis cannot be undone.`)) {
                                                 updateWeek(latestWeek.week, {
                                                     income: null,
                                                     business: null,
@@ -2140,10 +2140,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <button
                                         onClick={() => {
                                             setEditingWeek(week.week);
-                                            setEditIncome(week.income.toFixed(2));
-                                            setEditBusiness(week.business.toFixed(2));
-                                            setEditTax(week.tax.toFixed(2));
-                                            setEditPaycheck(week.paycheck.toFixed(2));
+                                            setEditIncome((week.income || 0).toFixed(2));
+                                            setEditBusiness((week.business || 0).toFixed(2));
+                                            setEditTax((week.tax || 0).toFixed(2));
+                                            setEditPaycheck((week.paycheck || 0).toFixed(2));
                                         }}
                                         className="text-blue-600 hover:underline text-sm"
                                     >
@@ -2239,25 +2239,25 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         <div>
                                             <div className="text-sm text-gray-600">Income</div>
                                             <div className="text-lg font-semibold text-gray-800 number-mono">
-                                                ${week.income.toFixed(2)}
+                                                ${(week.income || 0).toFixed(2)}
                                             </div>
                                         </div>
                                         <div>
                                             <div className="text-sm text-gray-600">→ Business</div>
                                             <div className="text-lg font-semibold text-blue-600 number-mono">
-                                                ${week.business.toFixed(2)}
+                                                ${(week.business || 0).toFixed(2)}
                                             </div>
                                         </div>
                                         <div>
                                             <div className="text-sm text-gray-600">→ Tax</div>
                                             <div className="text-lg font-semibold text-green-600 number-mono">
-                                                ${week.tax.toFixed(2)}
+                                                ${(week.tax || 0).toFixed(2)}
                                             </div>
                                         </div>
                                         <div>
                                             <div className="text-sm text-gray-600">→ Paycheck</div>
                                             <div className="text-lg font-semibold text-purple-600 number-mono">
-                                                ${week.paycheck.toFixed(2)}
+                                                ${(week.paycheck || 0).toFixed(2)}
                                             </div>
                                         </div>
                                     </div>
