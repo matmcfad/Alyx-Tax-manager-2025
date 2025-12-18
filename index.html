@@ -79,6 +79,15 @@
             seTaxBaseMultiplier: 0.9235     // 92.35% of net earnings
         };
 
+        // 2025 Qualified Business Income (QBI) Deduction Constants - Section 199A
+        // Note: Therapists are classified as SSTB (Specified Service Trade or Business)
+        const QBI_2025 = {
+            deductionRate: 0.20,            // 20% deduction
+            sstbThresholdSingle: 191950,    // Full deduction below this (2025 est.)
+            sstbPhaseOutSingle: 241950,     // No deduction above this (2025 est.)
+            isSSTB: true                    // Therapists are SSTB - affects high earners
+        };
+
         const STORAGE_KEY = "alyxIncomeManager";
         const STORAGE_VERSION = "1.0";
 
@@ -122,15 +131,83 @@
         }
 
         /**
-         * Calculate income tax using 2024 tax brackets (single filer)
+         * Calculate QBI (Qualified Business Income) deduction - Section 199A
+         * For therapists (SSTB), the deduction phases out at higher incomes
+         * @param {number} netBusinessIncome - Net profit from business (Schedule C line 31)
+         * @param {number} taxableIncomeBeforeQBI - Taxable income before QBI deduction
+         * @returns {object} { qbiDeduction, qbiFromBusiness, qbiFromTaxable, qbiLimited, sstbPhaseOut }
+         */
+        function calculateQBIDeduction(netBusinessIncome, taxableIncomeBeforeQBI) {
+            // QBI doesn't apply if taxable income is zero or negative
+            if (taxableIncomeBeforeQBI <= 0 || netBusinessIncome <= 0) {
+                return {
+                    qbiDeduction: 0,
+                    qbiFromBusiness: 0,
+                    qbiFromTaxable: 0,
+                    qbiLimited: false,
+                    sstbPhaseOut: false
+                };
+            }
+
+            const threshold = QBI_2025.sstbThresholdSingle;
+            const phaseOutEnd = QBI_2025.sstbPhaseOutSingle;
+
+            // If above phase-out, no QBI deduction for SSTB (therapists)
+            if (QBI_2025.isSSTB && taxableIncomeBeforeQBI >= phaseOutEnd) {
+                return {
+                    qbiDeduction: 0,
+                    qbiFromBusiness: 0,
+                    qbiFromTaxable: 0,
+                    qbiLimited: false,
+                    sstbPhaseOut: true
+                };
+            }
+
+            // Calculate base QBI deduction (20% of qualified business income)
+            let qbiFromBusiness = netBusinessIncome * QBI_2025.deductionRate;
+
+            // QBI is also limited to 20% of taxable income (before QBI)
+            const qbiFromTaxable = taxableIncomeBeforeQBI * QBI_2025.deductionRate;
+
+            // Apply SSTB phase-out if in phase-out range
+            let sstbPhaseOut = false;
+            if (QBI_2025.isSSTB && taxableIncomeBeforeQBI > threshold) {
+                sstbPhaseOut = true;
+                const phaseOutRange = phaseOutEnd - threshold;
+                const amountOver = taxableIncomeBeforeQBI - threshold;
+                const reductionRatio = amountOver / phaseOutRange;
+                qbiFromBusiness *= (1 - reductionRatio);
+            }
+
+            // QBI deduction is the lesser of the two calculations
+            const qbiDeduction = Math.min(qbiFromBusiness, qbiFromTaxable);
+
+            return {
+                qbiDeduction: Math.max(0, qbiDeduction),
+                qbiFromBusiness,
+                qbiFromTaxable,
+                qbiLimited: qbiFromTaxable < qbiFromBusiness,
+                sstbPhaseOut
+            };
+        }
+
+        /**
+         * Calculate income tax using 2025 tax brackets (single filer)
+         * Now includes QBI deduction calculation
          * @param {number} netIncome - Net income after business expenses
          * @param {number} seTaxDeduction - Half of self-employment tax
          * @param {number} standardDeduction - Standard deduction amount
-         * @returns {object} { incomeTax, taxableIncome, adjustedIncome }
+         * @returns {object} { incomeTax, taxableIncome, taxableIncomeBeforeQBI, adjustedIncome, qbiDeduction, qbiLimited }
          */
         function calculateIncomeTax(netIncome, seTaxDeduction, standardDeduction = 15000) {
             const adjustedIncome = netIncome - seTaxDeduction;
-            const taxableIncome = Math.max(0, adjustedIncome - standardDeduction);
+            const taxableIncomeBeforeQBI = Math.max(0, adjustedIncome - standardDeduction);
+
+            // Calculate QBI deduction (Section 199A)
+            const qbiResult = calculateQBIDeduction(netIncome, taxableIncomeBeforeQBI);
+
+            // Apply QBI deduction to get final taxable income
+            const taxableIncome = Math.max(0, taxableIncomeBeforeQBI - qbiResult.qbiDeduction);
 
             let incomeTax = 0;
             let bracketDetails = [];
@@ -154,22 +231,40 @@
                 }
             }
 
-            return { incomeTax, taxableIncome, adjustedIncome, bracketDetails };
+            return {
+                incomeTax,
+                taxableIncome,
+                taxableIncomeBeforeQBI,
+                adjustedIncome,
+                bracketDetails,
+                qbiDeduction: qbiResult.qbiDeduction,
+                qbiLimited: qbiResult.qbiLimited,
+                sstbPhaseOut: qbiResult.sstbPhaseOut
+            };
         }
 
         /**
          * Calculate total tax liability
-         * @param {number} netIncome - Net income after business expenses
+         * Now accepts business expenses to calculate net profit for tax purposes
+         * @param {number} grossIncome - Gross income before business expenses
+         * @param {number} businessExpenses - Annual business expenses (Schedule C deductions)
          * @param {number} standardDeduction - Standard deduction amount
          * @returns {object} Complete tax calculation breakdown
          */
-        function calculateTotalTax(netIncome, standardDeduction = 15000) {
-            const seResult = calculateSelfEmploymentTax(netIncome);
-            const { incomeTax, taxableIncome, adjustedIncome, bracketDetails } =
-                calculateIncomeTax(netIncome, seResult.seTaxDeduction, standardDeduction);
+        function calculateTotalTax(grossIncome, businessExpenses = 0, standardDeduction = 15000) {
+            // Calculate net profit (Schedule C line 31)
+            const netProfit = grossIncome - businessExpenses;
+
+            // SE tax is calculated on net profit
+            const seResult = calculateSelfEmploymentTax(netProfit);
+
+            // Income tax (now includes QBI deduction)
+            const incomeResult = calculateIncomeTax(netProfit, seResult.seTaxDeduction, standardDeduction);
 
             return {
-                netIncome,
+                grossIncome,
+                businessExpenses,
+                netProfit,
                 seTax: seResult.seTax,
                 ssTax: seResult.ssTax,
                 medicareTax: seResult.medicareTax,
@@ -177,11 +272,15 @@
                 seTaxDeduction: seResult.seTaxDeduction,
                 seTaxBase: seResult.seTaxBase,
                 ssWageBaseCapped: seResult.ssWageBaseCapped,
-                incomeTax,
-                taxableIncome,
-                adjustedIncome,
-                totalTax: seResult.seTax + incomeTax,
-                bracketDetails
+                incomeTax: incomeResult.incomeTax,
+                taxableIncome: incomeResult.taxableIncome,
+                taxableIncomeBeforeQBI: incomeResult.taxableIncomeBeforeQBI,
+                adjustedIncome: incomeResult.adjustedIncome,
+                qbiDeduction: incomeResult.qbiDeduction,
+                qbiLimited: incomeResult.qbiLimited,
+                sstbPhaseOut: incomeResult.sstbPhaseOut,
+                totalTax: seResult.seTax + incomeResult.incomeTax,
+                bracketDetails: incomeResult.bracketDetails
             };
         }
 
@@ -191,10 +290,12 @@
          * @param {number} ytdIncome - Year-to-date income
          * @param {number} weeksElapsed - Number of weeks completed
          * @param {number} taxSavingsBalance - Current tax savings balance
+         * @param {number} quarterlyPaid - Total quarterly payments already made
          * @param {object} settings - App settings
+         * @param {number} annualBusinessExpenses - Annual business expenses for tax deduction
          * @returns {object} { amount, percentage, status, explanation }
          */
-        function calculateSmartTaxSavings(weeklyIncome, ytdIncome, weeksElapsed, taxSavingsBalance, quarterlyPaid, settings) {
+        function calculateSmartTaxSavings(weeklyIncome, ytdIncome, weeksElapsed, taxSavingsBalance, quarterlyPaid, settings, annualBusinessExpenses = 0) {
             // If it's the very first week, use safe harbor amount as baseline
             if (weeksElapsed === 0) {
                 const weeklyTarget = settings.tax2024Total / 52;
@@ -211,8 +312,8 @@
             const avgWeekly = ytdIncome / weeksElapsed;
             const projectedAnnual = avgWeekly * 52;
 
-            // Calculate projected 2025 tax
-            const projectedTax = calculateTotalTax(projectedAnnual, settings.standardDeduction);
+            // Calculate projected 2025 tax (now with business expenses and QBI deduction)
+            const projectedTax = calculateTotalTax(projectedAnnual, annualBusinessExpenses, settings.standardDeduction);
 
             // We need enough to cover the HIGHER of:
             // 1. Safe harbor (2024 tax) - to avoid penalties
@@ -430,6 +531,27 @@
                 totalIn4Weeks,
                 billsFound: billsIn4Weeks
             };
+        }
+
+        /**
+         * Calculate total annual business expenses from expense budget
+         * Used for tax deduction purposes (Schedule C expenses)
+         * @param {object} expenseBudget - The expense budget object with monthly amounts
+         * @returns {number} Total annual business expenses
+         */
+        function calculateAnnualBusinessExpenses(expenseBudget) {
+            if (!expenseBudget || Object.keys(expenseBudget).length === 0) {
+                return 0;
+            }
+
+            let annualTotal = 0;
+            for (const [expense, monthlyAmounts] of Object.entries(expenseBudget)) {
+                // Sum all 12 months of each expense
+                const yearTotal = monthlyAmounts.reduce((sum, amount) => sum + (amount || 0), 0);
+                annualTotal += yearTotal;
+            }
+
+            return annualTotal;
         }
 
         // ============================================================================
@@ -1085,7 +1207,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             // Calculate projections
             const averageWeekly = weeksElapsed > 0 ? ytdIncome / weeksElapsed : 0;
             const projectedAnnual = averageWeekly * 52;
-            const projectedTax = calculateTotalTax(projectedAnnual, appData.settings.standardDeduction);
+            const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
+            const projectedTax = calculateTotalTax(projectedAnnual, annualExpenses, appData.settings.standardDeduction);
 
             // Next quarterly payment
             const nextQuarterly = appData.quarterlyPayments.find(q => !q.paid);
@@ -1113,14 +1236,18 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 // Calculate business expenses first (capped at 50% of income)
                 const business = Math.min(rolling4Week.weeklyAmount, income * 0.5);
 
-                // Calculate smart tax savings
+                // Calculate annual business expenses for tax deduction
+                const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
+
+                // Calculate smart tax savings (now with business expense deduction)
                 const smartTax = calculateSmartTaxSavings(
                     income,
                     ytdIncome,
                     weeksElapsed,
                     taxSavingsBalance,
                     quarterlyPaid,
-                    appData.settings
+                    appData.settings,
+                    annualExpenses
                 );
 
                 // Cap tax at what's available after business expenses
@@ -1381,14 +1508,18 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             // Cap business at 50% of income
                             business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
 
-                            // Calculate smart tax for this week
+                            // Calculate annual business expenses for tax deduction
+                            const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
+
+                            // Calculate smart tax for this week (now with business expense deduction)
                             const smartTax = calculateSmartTaxSavings(
                                 incomeValue,
                                 runningYtdIncome,
                                 runningWeeksElapsed,
                                 runningTaxBalance,
                                 quarterlyPaid,
-                                appData.settings
+                                appData.settings,
+                                annualExpenses
                             );
 
                             // Cap tax at what's available (income - business)
@@ -1562,8 +1693,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                     appData.expenses.dueDates
                                                 );
                                                 const business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
+                                                const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
 
-                                                const smartTax = calculateSmartTaxSavings(incomeValue, runningYtd, runningWeeks, runningTax, quarterlyPaid, appData.settings);
+                                                const smartTax = calculateSmartTaxSavings(incomeValue, runningYtd, runningWeeks, runningTax, quarterlyPaid, appData.settings, annualExpenses);
                                                 // Cap tax at available amount
                                                 const tax = Math.min(smartTax.amount, incomeValue - business);
                                                 totalBusiness += business;
@@ -2295,7 +2427,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             const averageWeekly = weeksElapsed > 0 ? ytdIncome / weeksElapsed : 0;
             const projectedAnnual = averageWeekly * 52;
-            const projectedTax = calculateTotalTax(projectedAnnual, appData.settings.standardDeduction);
+            const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
+            const projectedTax = calculateTotalTax(projectedAnnual, annualExpenses, appData.settings.standardDeduction);
 
             const totalQuarterly = appData.settings.tax2024Total;
             const additionalNeeded = Math.max(0, projectedTax.totalTax - totalQuarterly);
@@ -2419,11 +2552,20 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 <h4 className="font-semibold mb-3">DETAILED TAX CALCULATION</h4>
 
                                 <div className="space-y-2 mb-4">
-                                    <div className="font-semibold">Projected 2025 income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                    {/* Gross Income & Business Expenses */}
+                                    <div className="font-semibold">Projected 2025 gross income: ${projectedTax.grossIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+
+                                    {projectedTax.businessExpenses > 0 && (
+                                        <div className="ml-4 p-2 bg-yellow-50 border border-yellow-200 rounded">
+                                            <div className="text-yellow-800">Less: Business expenses (Schedule C):</div>
+                                            <div className="ml-2 font-semibold text-yellow-900">-${projectedTax.businessExpenses.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                            <div className="mt-1 font-semibold text-yellow-900">Net profit: ${projectedTax.netProfit.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        </div>
+                                    )}
 
                                     <div className="mt-3 font-semibold">SELF-EMPLOYMENT TAX:</div>
                                     <div className="ml-4">
-                                        <div>Net income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>Net profit: ${projectedTax.netProfit.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                         <div>× 0.9235 = ${projectedTax.seTaxBase.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax base)</div>
                                         <div className="mt-2 ml-2">
                                             <div className="text-gray-600">Social Security (12.4%{projectedTax.ssWageBaseCapped ? `, capped at $${SE_TAX_2025.socialSecurityWageBase.toLocaleString()}` : ''}):</div>
@@ -2443,10 +2585,32 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                                     <div className="mt-3 font-semibold">INCOME TAX:</div>
                                     <div className="ml-4">
-                                        <div>Adjusted income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} - ${projectedTax.seTaxDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
-                                        <div>= ${projectedTax.adjustedIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>Net profit: ${projectedTax.netProfit.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} - SE deduction: ${projectedTax.seTaxDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>= Adjusted Gross Income: ${projectedTax.adjustedIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                         <div>Standard deduction: -${appData.settings.standardDeduction.toLocaleString()}</div>
-                                        <div>Taxable income: ${projectedTax.taxableIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>Taxable income (before QBI): ${projectedTax.taxableIncomeBeforeQBI.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+
+                                        {/* QBI Deduction Section */}
+                                        <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded">
+                                            <div className="font-semibold text-green-800">QBI Deduction (Section 199A):</div>
+                                            {projectedTax.qbiDeduction > 0 ? (
+                                                <div className="ml-2 text-green-700">
+                                                    <div>20% deduction for qualified business income</div>
+                                                    <div className="font-semibold">-${projectedTax.qbiDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                    {projectedTax.qbiLimited && (
+                                                        <div className="text-sm text-green-600">(Limited to 20% of taxable income)</div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <div className="ml-2 text-gray-500">
+                                                    {projectedTax.sstbPhaseOut
+                                                        ? "Phased out (income above SSTB threshold for therapists)"
+                                                        : "$0 (income too low to benefit)"}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="mt-2 font-semibold">Final taxable income: ${projectedTax.taxableIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
 
                                         <div className="mt-2 font-semibold">Progressive tax calculation:</div>
                                         <div className="ml-4">
@@ -2474,6 +2638,22 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         )}
 
                         <div className="space-y-2 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                            {projectedTax.businessExpenses > 0 && (
+                                <div>
+                                    <span className="text-gray-700">• Business expenses deduction:</span>
+                                    <span className="ml-2 font-semibold number-mono text-yellow-700">
+                                        -${projectedTax.businessExpenses.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    </span>
+                                </div>
+                            )}
+                            {projectedTax.qbiDeduction > 0 && (
+                                <div>
+                                    <span className="text-gray-700">• QBI deduction (Section 199A):</span>
+                                    <span className="ml-2 font-semibold number-mono text-green-700">
+                                        -${projectedTax.qbiDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    </span>
+                                </div>
+                            )}
                             <div>
                                 <span className="text-gray-700">• Self-employment tax:</span>
                                 <span className="ml-2 font-semibold number-mono">
