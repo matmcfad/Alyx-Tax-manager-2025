@@ -69,6 +69,16 @@
             businessName: "Alyx Steadman Therapy PLLC"
         };
 
+        // 2025 Self-Employment Tax Constants
+        const SE_TAX_2025 = {
+            socialSecurityRate: 0.124,      // 12.4% Social Security
+            socialSecurityWageBase: 176100, // 2025 SS wage base cap
+            medicareRate: 0.029,            // 2.9% Medicare (no cap)
+            additionalMedicareRate: 0.009,  // 0.9% Additional Medicare Tax
+            additionalMedicareThreshold: 200000, // Single filer threshold
+            seTaxBaseMultiplier: 0.9235     // 92.35% of net earnings
+        };
+
         const STORAGE_KEY = "alyxIncomeManager";
         const STORAGE_VERSION = "1.0";
 
@@ -77,15 +87,38 @@
         // ============================================================================
 
         /**
-         * Calculate self-employment tax
+         * Calculate self-employment tax with proper wage base cap
          * @param {number} netIncome - Net income after business expenses
-         * @returns {object} { seTax, seTaxDeduction }
+         * @returns {object} { seTax, ssTax, medicareTax, additionalMedicareTax, seTaxDeduction, seTaxBase }
          */
         function calculateSelfEmploymentTax(netIncome) {
-            const seTaxBase = netIncome * 0.9235;
-            const seTax = seTaxBase * 0.153; // 15.3% (12.4% SS + 2.9% Medicare)
+            const seTaxBase = netIncome * SE_TAX_2025.seTaxBaseMultiplier;
+
+            // Social Security: 12.4% only up to wage base cap
+            const ssTaxableAmount = Math.min(seTaxBase, SE_TAX_2025.socialSecurityWageBase);
+            const ssTax = ssTaxableAmount * SE_TAX_2025.socialSecurityRate;
+
+            // Medicare: 2.9% on ALL income (no cap)
+            const medicareTax = seTaxBase * SE_TAX_2025.medicareRate;
+
+            // Additional Medicare Tax: 0.9% on income over threshold
+            let additionalMedicareTax = 0;
+            if (seTaxBase > SE_TAX_2025.additionalMedicareThreshold) {
+                additionalMedicareTax = (seTaxBase - SE_TAX_2025.additionalMedicareThreshold) * SE_TAX_2025.additionalMedicareRate;
+            }
+
+            const seTax = ssTax + medicareTax + additionalMedicareTax;
             const seTaxDeduction = seTax * 0.5; // Deduct half of SE tax
-            return { seTax, seTaxDeduction, seTaxBase };
+
+            return {
+                seTax,
+                ssTax,
+                medicareTax,
+                additionalMedicareTax,
+                seTaxDeduction,
+                seTaxBase,
+                ssWageBaseCapped: seTaxBase > SE_TAX_2025.socialSecurityWageBase
+            };
         }
 
         /**
@@ -131,19 +164,23 @@
          * @returns {object} Complete tax calculation breakdown
          */
         function calculateTotalTax(netIncome, standardDeduction = 15000) {
-            const { seTax, seTaxDeduction, seTaxBase } = calculateSelfEmploymentTax(netIncome);
+            const seResult = calculateSelfEmploymentTax(netIncome);
             const { incomeTax, taxableIncome, adjustedIncome, bracketDetails } =
-                calculateIncomeTax(netIncome, seTaxDeduction, standardDeduction);
+                calculateIncomeTax(netIncome, seResult.seTaxDeduction, standardDeduction);
 
             return {
                 netIncome,
-                seTax,
-                seTaxDeduction,
-                seTaxBase,
+                seTax: seResult.seTax,
+                ssTax: seResult.ssTax,
+                medicareTax: seResult.medicareTax,
+                additionalMedicareTax: seResult.additionalMedicareTax,
+                seTaxDeduction: seResult.seTaxDeduction,
+                seTaxBase: seResult.seTaxBase,
+                ssWageBaseCapped: seResult.ssWageBaseCapped,
                 incomeTax,
                 taxableIncome,
                 adjustedIncome,
-                totalTax: seTax + incomeTax,
+                totalTax: seResult.seTax + incomeTax,
                 bracketDetails
             };
         }
@@ -2370,7 +2407,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <div className="ml-4">
                                         <div>Net income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                         <div>× 0.9235 = ${projectedTax.seTaxBase.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax base)</div>
-                                        <div>× 0.153 = ${projectedTax.seTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax)</div>
+                                        <div className="mt-2 ml-2">
+                                            <div className="text-gray-600">Social Security (12.4%{projectedTax.ssWageBaseCapped ? `, capped at $${SE_TAX_2025.socialSecurityWageBase.toLocaleString()}` : ''}):</div>
+                                            <div className="ml-2">${projectedTax.ssTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                            <div className="text-gray-600 mt-1">Medicare (2.9%, no cap):</div>
+                                            <div className="ml-2">${projectedTax.medicareTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                            {projectedTax.additionalMedicareTax > 0 && (
+                                                <>
+                                                    <div className="text-gray-600 mt-1">Additional Medicare (0.9% over $200k):</div>
+                                                    <div className="ml-2">${projectedTax.additionalMedicareTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                </>
+                                            )}
+                                        </div>
+                                        <div className="mt-2 font-semibold">Total SE tax: ${projectedTax.seTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                         <div>÷ 2 = ${projectedTax.seTaxDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax deduction)</div>
                                     </div>
 
