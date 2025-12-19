@@ -21,7 +21,7 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <!-- Google OAuth handled by Cloudflare Worker at auth.matmcfad.com -->
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -93,9 +93,8 @@
         const STORAGE_VERSION = "1.0";
 
         // Google Drive Backup Constants
-        // TODO: Replace with your Google Cloud Console Client ID
-        const GOOGLE_CLIENT_ID = '269878332874-0ru0aq49k7ki7qddqais1dmol7fjuk5d.apps.googleusercontent.com';
-        const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
+        // Auth handled by Cloudflare Worker - see workers/auth-worker/
+        const AUTH_WORKER_URL = 'https://auth.matmcfad.com';
         const DRIVE_BACKUP_FILENAME = 'alyx-tax-manager-2025-backup.json';
         const SYNC_DEBOUNCE_MS = 5000; // Wait 5 seconds after last change before syncing
 
@@ -746,7 +745,6 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             });
 
             // Refs for non-reactive data
-            const tokenClientRef = useRef(null);
             const syncTimeoutRef = useRef(null);
             const syncQueueRef = useRef({
                 isProcessing: false,
@@ -771,86 +769,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 });
             }, []);
 
-            // Initialize Google Identity Services token client
-            const initializeGoogleAuth = useCallback(() => {
-                if (!window.google?.accounts?.oauth2) {
-                    console.error('Google Identity Services not loaded');
-                    return null;
-                }
-
-                if (tokenClientRef.current) {
-                    return tokenClientRef.current;
-                }
-
-                const tokenClient = window.google.accounts.oauth2.initTokenClient({
-                    client_id: GOOGLE_CLIENT_ID,
-                    scope: GOOGLE_SCOPES,
-                    callback: (tokenResponse) => {
-                        if (tokenResponse.error) {
-                            console.error('OAuth error:', tokenResponse.error);
-                            updateSyncState({
-                                status: 'error',
-                                error: tokenResponse.error_description || 'Authentication failed'
-                            });
-                            return;
-                        }
-
-                        // Store token and expiry for session persistence
-                        const expiresAt = Date.now() + (tokenResponse.expires_in * 1000);
-                        localStorage.setItem('googleTokenExpiry', expiresAt.toString());
-                        localStorage.setItem('googleAccessToken', tokenResponse.access_token);
-
-                        updateSyncState({
-                            status: 'connected',
-                            accessToken: tokenResponse.access_token,
-                            error: null
-                        });
-                    },
-                    error_callback: (error) => {
-                        console.error('Token client error:', error);
-                        const wasConnected = localStorage.getItem('googleConnected') === 'true';
-
-                        // Check for popup blocked/failed errors
-                        const isPopupBlocked = error.type === 'popup_closed' ||
-                                               error.type === 'popup_failed_to_open' ||
-                                               error.type === 'popup_blocked';
-
-                        if (wasConnected && isPopupBlocked) {
-                            // Popup was blocked during silent refresh, but user WAS connected
-                            // Don't log them out - just show a reconnect prompt
-                            localStorage.removeItem('googleAccessToken');
-                            updateSyncState({
-                                status: 'disconnected',
-                                accessToken: null,
-                                error: 'Click "Connect Google Drive" in Settings to reconnect.'
-                            });
-                            // Keep googleConnected=true so we know they were connected before
-                        } else if (wasConnected) {
-                            // Actual session expiry or other error
-                            localStorage.setItem('googleConnected', 'false');
-                            localStorage.removeItem('googleAccessToken');
-                            updateSyncState({
-                                status: 'disconnected',
-                                accessToken: null,
-                                error: 'Session expired. Please reconnect to Google in Settings.'
-                            });
-                        } else if (error.type === 'popup_closed') {
-                            // User closed popup during manual sign-in
-                            updateSyncState({ status: 'disconnected' });
-                        } else {
-                            updateSyncState({
-                                status: 'error',
-                                error: error.message || 'Connection failed'
-                            });
-                        }
-                    }
-                });
-
-                tokenClientRef.current = tokenClient;
-                return tokenClient;
-            }, [updateSyncState]);
-
-            // Ensure we have a valid token, refresh if needed
+            // Get access token from Cloudflare Worker
+            // Worker handles refresh tokens securely - we just get back a fresh access token
             const ensureValidToken = useCallback(async () => {
                 const expiryStr = localStorage.getItem('googleTokenExpiry');
                 const expiry = expiryStr ? parseInt(expiryStr) : 0;
@@ -860,38 +780,52 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return syncState.accessToken;
                 }
 
-                // Check localStorage for stored token (may have been restored on page load)
+                // Check localStorage for cached token
                 const storedToken = localStorage.getItem('googleAccessToken');
                 if (storedToken && Date.now() < expiry - 300000) {
                     updateSyncState({ accessToken: storedToken });
                     return storedToken;
                 }
 
-                // Need to refresh token
-                return new Promise((resolve, reject) => {
-                    const tokenClient = initializeGoogleAuth();
-                    if (!tokenClient) {
-                        reject(new Error('Google services not available'));
-                        return;
+                // Need to get fresh token from Worker
+                try {
+                    const response = await fetch(`${AUTH_WORKER_URL}/auth/token`, {
+                        credentials: 'include'  // Send session cookie
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json().catch(() => ({}));
+
+                        if (error.code === 'NO_SESSION' || error.code === 'SESSION_EXPIRED') {
+                            // Session invalid - need to re-authenticate
+                            localStorage.setItem('googleConnected', 'false');
+                            localStorage.removeItem('googleAccessToken');
+                            localStorage.removeItem('googleTokenExpiry');
+                            updateSyncState({
+                                status: 'disconnected',
+                                accessToken: null,
+                                error: 'Session expired. Please reconnect to Google Drive in Settings.'
+                            });
+                            throw new Error('Session expired');
+                        }
+
+                        throw new Error(error.error || 'Failed to get token');
                     }
 
-                    const originalCallback = tokenClient.callback;
-                    tokenClient.callback = (response) => {
-                        tokenClient.callback = originalCallback;
-                        if (response.error) {
-                            reject(new Error(response.error_description || response.error));
-                        } else {
-                            const expiresAt = Date.now() + (response.expires_in * 1000);
-                            localStorage.setItem('googleTokenExpiry', expiresAt.toString());
-                            localStorage.setItem('googleAccessToken', response.access_token);
-                            updateSyncState({ accessToken: response.access_token });
-                            resolve(response.access_token);
-                        }
-                    };
+                    const data = await response.json();
 
-                    tokenClient.requestAccessToken({ prompt: '' });
-                });
-            }, [syncState.accessToken, initializeGoogleAuth, updateSyncState]);
+                    // Cache the token
+                    const expiresAt = Date.now() + (data.expires_in * 1000);
+                    localStorage.setItem('googleTokenExpiry', expiresAt.toString());
+                    localStorage.setItem('googleAccessToken', data.access_token);
+
+                    updateSyncState({ accessToken: data.access_token });
+                    return data.access_token;
+                } catch (error) {
+                    console.error('Token fetch error:', error);
+                    throw error;
+                }
+            }, [syncState.accessToken, updateSyncState]);
 
             // Generic Drive API request helper
             const driveApiRequest = useCallback(async (endpoint, options = {}) => {
@@ -1063,30 +997,28 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 }
             }, [appData, setAppData, syncState.accessToken, uploadToDrive, downloadFromDrive, updateSyncState]);
 
-            // Public API: Connect to Google
+            // Public API: Connect to Google (redirects to Cloudflare Worker)
             const connect = useCallback(() => {
-                const tokenClient = initializeGoogleAuth();
-                if (!tokenClient) {
-                    updateSyncState({ error: 'Google services not available. Try refreshing the page.' });
-                    return;
-                }
-
                 updateSyncState({ status: 'connecting', error: null });
-                tokenClient.requestAccessToken({ prompt: 'consent' });
-            }, [initializeGoogleAuth, updateSyncState]);
+                // Redirect to Worker OAuth flow - will redirect back with ?auth=success
+                window.location.href = `${AUTH_WORKER_URL}/auth/login`;
+            }, [updateSyncState]);
 
             // Public API: Disconnect from Google
-            const disconnect = useCallback(() => {
-                if (syncState.accessToken) {
-                    window.google?.accounts?.oauth2?.revoke(syncState.accessToken, () => {
-                        console.log('Token revoked');
+            const disconnect = useCallback(async () => {
+                try {
+                    // Call Worker to clear session
+                    await fetch(`${AUTH_WORKER_URL}/auth/logout`, {
+                        method: 'POST',
+                        credentials: 'include'
                     });
+                } catch (error) {
+                    console.error('Logout error:', error);
                 }
 
                 localStorage.removeItem('googleTokenExpiry');
                 localStorage.removeItem('googleAccessToken');
                 localStorage.setItem('googleConnected', 'false');
-                tokenClientRef.current = null;
 
                 updateSyncState({
                     status: 'disconnected',
@@ -1095,7 +1027,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     error: null,
                     pendingChanges: false
                 });
-            }, [syncState.accessToken, updateSyncState]);
+            }, [updateSyncState]);
 
             // Public API: Push to cloud
             const pushToCloud = useCallback(() => {
@@ -1145,44 +1077,122 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 }
             }, [syncState.accessToken, appData?.settings?.setupComplete, findBackupFile]);
 
-            // Effect: Restore connection on page load
+            // Effect: Handle OAuth callback and restore connection on page load
             useEffect(() => {
-                const restore = () => {
+                const restore = async () => {
+                    // Check for OAuth callback from Worker
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const authStatus = urlParams.get('auth');
+
+                    if (authStatus === 'success') {
+                        // Clean up URL
+                        window.history.replaceState({}, '', window.location.pathname);
+
+                        // Mark as connected and get initial token
+                        localStorage.setItem('googleConnected', 'true');
+                        updateSyncState({ status: 'connecting' });
+
+                        try {
+                            const response = await fetch(`${AUTH_WORKER_URL}/auth/token`, {
+                                credentials: 'include'
+                            });
+
+                            if (response.ok) {
+                                const data = await response.json();
+                                const expiresAt = Date.now() + (data.expires_in * 1000);
+                                localStorage.setItem('googleTokenExpiry', expiresAt.toString());
+                                localStorage.setItem('googleAccessToken', data.access_token);
+
+                                updateSyncState({
+                                    status: 'connected',
+                                    accessToken: data.access_token,
+                                    error: null
+                                });
+                                console.log('OAuth callback: Connected successfully');
+                            } else {
+                                throw new Error('Failed to get token after auth');
+                            }
+                        } catch (error) {
+                            console.error('OAuth callback error:', error);
+                            updateSyncState({
+                                status: 'error',
+                                error: 'Authentication failed. Please try again.'
+                            });
+                        }
+                        return;
+                    }
+
+                    if (authStatus === 'error') {
+                        const message = urlParams.get('message') || 'Authentication failed';
+                        window.history.replaceState({}, '', window.location.pathname);
+                        updateSyncState({
+                            status: 'error',
+                            error: decodeURIComponent(message)
+                        });
+                        return;
+                    }
+
+                    // Normal page load - check if we were connected
                     const wasConnected = localStorage.getItem('googleConnected') === 'true';
                     if (!wasConnected) return;
 
-                    // Check for stored token first - avoids popup entirely
+                    // Check for cached token first
                     const storedToken = localStorage.getItem('googleAccessToken');
                     const expiryStr = localStorage.getItem('googleTokenExpiry');
                     const expiry = expiryStr ? parseInt(expiryStr) : 0;
 
-                    // If we have a valid (non-expired) token, restore directly without calling Google
-                    if (storedToken && Date.now() < expiry - 60000) {  // 1 min buffer
-                        console.log('Restoring session from stored token');
+                    if (storedToken && Date.now() < expiry - 60000) {
+                        console.log('Restoring session from cached token');
                         updateSyncState({
                             status: 'connected',
                             accessToken: storedToken,
                             error: null
                         });
-                        return;  // No need to call Google API!
-                    }
-
-                    // Token expired or missing - need to try refresh
-                    // Wait for Google API to load
-                    if (!window.google?.accounts?.oauth2) {
-                        setTimeout(restore, 500);
                         return;
                     }
 
-                    const tokenClient = initializeGoogleAuth();
-                    if (!tokenClient) return;
-
+                    // Token expired - try to refresh from Worker
+                    console.log('Cached token expired, refreshing from Worker');
                     updateSyncState({ status: 'connecting' });
-                    tokenClient.requestAccessToken({ prompt: '' });
+
+                    try {
+                        const response = await fetch(`${AUTH_WORKER_URL}/auth/token`, {
+                            credentials: 'include'
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            const expiresAt = Date.now() + (data.expires_in * 1000);
+                            localStorage.setItem('googleTokenExpiry', expiresAt.toString());
+                            localStorage.setItem('googleAccessToken', data.access_token);
+
+                            updateSyncState({
+                                status: 'connected',
+                                accessToken: data.access_token,
+                                error: null
+                            });
+                        } else {
+                            // Session expired on Worker side
+                            localStorage.setItem('googleConnected', 'false');
+                            localStorage.removeItem('googleAccessToken');
+                            localStorage.removeItem('googleTokenExpiry');
+                            updateSyncState({
+                                status: 'disconnected',
+                                accessToken: null,
+                                error: 'Session expired. Please reconnect to Google Drive.'
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Token refresh error:', error);
+                        updateSyncState({
+                            status: 'disconnected',
+                            error: 'Could not connect. Please try again.'
+                        });
+                    }
                 };
 
                 restore();
-            }, [initializeGoogleAuth, updateSyncState]);
+            }, [updateSyncState]);
 
             // Effect: Online/offline handling
             useEffect(() => {
@@ -1281,12 +1291,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 pullFromCloud,
                 checkForUpdates,
 
-                // For setup flow compatibility
-                initializeGoogleAuth,
+                // For setup flow and direct API access
                 findBackupFile,
                 driveApiRequest,
 
-                // Legacy compatibility - will be removed in Phase 4
+                // Legacy compatibility setters
                 setGoogleAccessToken: (token) => updateSyncState({ accessToken: token }),
                 setDriveStatus: (status) => updateSyncState({ status }),
                 setLastSyncTime: (time) => updateSyncState({ lastSyncTime: time }),
@@ -1312,7 +1321,6 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 syncState,
                 connect: handleGoogleSignIn,
                 disconnect: handleGoogleSignOut,
-                initializeGoogleAuth,
                 findBackupFile,
                 driveApiRequest,
                 setGoogleAccessToken,
@@ -1441,7 +1449,6 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             updateSettings({ setupComplete: true });
                             setIsSetupComplete(true);
                         }}
-                        initializeGoogleAuth={initializeGoogleAuth}
                         setGoogleAccessToken={setGoogleAccessToken}
                         setDriveStatus={setDriveStatus}
                         setLastSyncTime={setLastSyncTime}
@@ -1571,7 +1578,6 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             setupStep,
             setSetupStep,
             onComplete,
-            initializeGoogleAuth,
             setGoogleAccessToken,
             setDriveStatus,
             setLastSyncTime,
@@ -1584,38 +1590,40 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [googleSignInStatus, setGoogleSignInStatus] = useState('idle'); // idle|signing-in|checking|error
             const [googleSignInError, setGoogleSignInError] = useState(null);
 
-            // Handle Google sign-in for setup
-            const handleGoogleSignInForSetup = () => {
-                if (!window.google?.accounts?.oauth2) {
-                    setGoogleSignInError('Google services not available. Try refreshing the page.');
-                    setGoogleSignInStatus('error');
-                    return;
-                }
+            // Handle OAuth callback on component mount
+            useEffect(() => {
+                const handleAuthCallback = async () => {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const authStatus = urlParams.get('auth');
 
-                setGoogleSignInStatus('signing-in');
-                setGoogleSignInError(null);
+                    if (authStatus === 'success') {
+                        // Clean up URL
+                        window.history.replaceState({}, '', window.location.pathname);
 
-                const tokenClient = window.google.accounts.oauth2.initTokenClient({
-                    client_id: GOOGLE_CLIENT_ID,
-                    scope: GOOGLE_SCOPES,
-                    callback: async (tokenResponse) => {
-                        if (tokenResponse.error) {
-                            setGoogleSignInError(tokenResponse.error_description || 'Sign-in failed');
-                            setGoogleSignInStatus('error');
-                            return;
-                        }
-
-                        // Store token info
-                        const accessToken = tokenResponse.access_token;
-                        const expiresAt = Date.now() + (tokenResponse.expires_in * 1000);
-                        localStorage.setItem('googleTokenExpiry', expiresAt.toString());
+                        setGoogleSignInStatus('checking');
                         localStorage.setItem('googleConnected', 'true');
 
-                        setGoogleAccessToken(accessToken);
-                        setGoogleSignInStatus('checking');
-
-                        // Check for existing backup
                         try {
+                            // Get token from Worker
+                            const tokenResponse = await fetch(`${AUTH_WORKER_URL}/auth/token`, {
+                                credentials: 'include'
+                            });
+
+                            if (!tokenResponse.ok) {
+                                throw new Error('Failed to get access token');
+                            }
+
+                            const tokenData = await tokenResponse.json();
+                            const accessToken = tokenData.access_token;
+
+                            // Cache token locally
+                            const expiresAt = Date.now() + (tokenData.expires_in * 1000);
+                            localStorage.setItem('googleTokenExpiry', expiresAt.toString());
+                            localStorage.setItem('googleAccessToken', accessToken);
+
+                            setGoogleAccessToken(accessToken);
+
+                            // Check for existing backup
                             const response = await fetch(
                                 `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_BACKUP_FILENAME}'&fields=files(id,name,modifiedTime)`,
                                 {
@@ -1650,26 +1658,34 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 setDriveStatus('connected');
                                 setLastSyncTime(new Date());
                                 setIsSetupComplete(true);
-                                // No need to call onComplete - setIsSetupComplete will trigger re-render
                             } else {
                                 // No backup - new user, continue to setup
                                 setDriveStatus('connected');
                                 setGoogleSignInStatus('idle');
-                                setSetupStep(2); // Move to tax info step
+                                setSetupStep(2);
                             }
                         } catch (error) {
-                            console.error('Error checking for backup:', error);
-                            setGoogleSignInError('Failed to check for backup: ' + error.message);
+                            console.error('Error during auth callback:', error);
+                            setGoogleSignInError('Failed to complete sign-in: ' + error.message);
                             setGoogleSignInStatus('error');
                         }
-                    },
-                    error_callback: (error) => {
-                        setGoogleSignInError(error.message || 'Sign-in failed');
+                    } else if (authStatus === 'error') {
+                        const message = urlParams.get('message') || 'Sign-in failed';
+                        window.history.replaceState({}, '', window.location.pathname);
+                        setGoogleSignInError(decodeURIComponent(message));
                         setGoogleSignInStatus('error');
                     }
-                });
+                };
 
-                tokenClient.requestAccessToken({ prompt: 'consent' });
+                handleAuthCallback();
+            }, [setAppData, setGoogleAccessToken, setDriveStatus, setLastSyncTime, setIsSetupComplete, setSetupStep]);
+
+            // Handle Google sign-in for setup (redirects to Worker)
+            const handleGoogleSignInForSetup = () => {
+                setGoogleSignInStatus('signing-in');
+                setGoogleSignInError(null);
+                // Redirect to Worker OAuth flow
+                window.location.href = `${AUTH_WORKER_URL}/auth/login`;
             };
 
             // Handle skip - continue without cloud backup

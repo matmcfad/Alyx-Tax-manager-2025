@@ -1,0 +1,21 @@
+name = "alyx-tax-auth"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# TODO: Replace with your Cloudflare account ID from the dashboard URL
+# account_id = "YOUR_ACCOUNT_ID"
+
+[vars]
+ALLOWED_ORIGIN = "https://tax.matmcfad.com"
+
+# TODO: Create KV namespace in Cloudflare dashboard and add ID here
+# [[kv_namespaces]]
+# binding = "TOKENS"
+# id = "YOUR_KV_NAMESPACE_ID"
+
+# Secrets are set via: npx wrangler secret put SECRET_NAME
+# Required secrets:
+# - GOOGLE_CLIENT_ID
+# - GOOGLE_CLIENT_SECRET
+
+# Custom domain (auth.matmcfad.com) configured via Cloudflare dashboard after first deploy
