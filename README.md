@@ -15,7 +15,7 @@ A Progressive Web App for managing weekly income, business expenses, and tax sav
 
 ## Quick Access
 
-**🌐 Use Online (Recommended)**: Visit **https://matmcfad.github.io/Alyx-Tax-manager/** and install the PWA directly from your browser!
+**🌐 Use Online (Recommended)**: Visit **https://app.therapytaxapp.work** and install the PWA directly from your browser!
 
 **New users**: See [QUICK-START.md](QUICK-START.md) for the fastest setup path.
 
@@ -23,17 +23,22 @@ A Progressive Web App for managing weekly income, business expenses, and tax sav
 
 ```
 Alyx Tax manager/
-├── index.html              # Main application file (PWA)
-├── manifest.json           # PWA manifest (app metadata)
-├── service-worker.js       # Service worker (offline support)
-├── icon-192.png           # App icon 192x192 (you need to create this)
-├── icon-512.png           # App icon 512x512 (you need to create this)
-├── START.bat              # Windows launcher (runs local HTTP server)
-├── START.sh               # Mac/Linux launcher (runs local HTTP server)
-├── expense-budget-template.csv  # Template for expense budget
-├── QUICK-START.md         # Quick setup instructions
-├── ICON-INSTRUCTIONS.md   # How to create app icons
-└── README.md              # This file
+├── index.html                    # Main application file (PWA)
+├── manifest.json                 # PWA manifest (app metadata)
+├── service-worker.js             # Service worker (offline support)
+├── CNAME                         # GitHub Pages custom domain
+├── icon-192.png                  # App icon 192x192
+├── icon-512.png                  # App icon 512x512
+├── START.bat                     # Windows launcher (local dev)
+├── START.sh                      # Mac/Linux launcher (local dev)
+├── expense-budget-template.csv   # Template for expense budget
+├── CLAUDE.md                     # Development guide & infrastructure docs
+├── README.md                     # This file
+└── workers/
+    └── auth-worker/              # Cloudflare Worker for OAuth
+        ├── src/index.ts          # Worker code
+        ├── wrangler.toml         # Worker configuration
+        └── package.json          # Dependencies
 ```
 
 ## Installation
@@ -42,7 +47,7 @@ Alyx Tax manager/
 
 **🌐 Direct Access - No Setup Required!**
 
-1. Visit **https://matmcfad.github.io/Alyx-Tax-manager/** in Chrome, Edge, or Safari
+1. Visit **https://app.therapytaxapp.work** in Chrome, Edge, or Safari
 2. The app loads instantly - no downloads needed!
 3. Click the **Install** button in your browser's address bar (or go to Settings → Install App in the app)
 4. Follow your browser's prompts to install the PWA
@@ -306,7 +311,21 @@ The smart tax calculation accounts for quarterly payments already made and adjus
 
 ## Technical Details
 
-### Architecture
+### Infrastructure Overview
+
+The app runs on multiple services that work together:
+
+| Component | URL | Hosted On | Purpose |
+|-----------|-----|-----------|---------|
+| Main App | `app.therapytaxapp.work` | GitHub Pages | The PWA itself |
+| Auth Worker | `auth.therapytaxapp.work` | Cloudflare Workers | Google OAuth for Drive backup |
+| Domain | `therapytaxapp.work` | Cloudflare | DNS and domain management |
+
+**Why this architecture?** Google Drive backup requires OAuth with a `client_secret`. Browsers can't safely store secrets, so a backend worker handles token exchange. Both services share the same domain so session cookies work (first-party, not blocked by browsers).
+
+See [CLAUDE.md](CLAUDE.md) for full infrastructure documentation including DNS records, Cloudflare setup, and troubleshooting.
+
+### Application Architecture
 
 This is a **Progressive Web App (PWA)** built with:
 - **Frontend**: React 18 (via CDN), Tailwind CSS (via CDN)
@@ -331,9 +350,15 @@ This is a **Progressive Web App (PWA)** built with:
 
 ### Data Storage
 
-All data is stored in your browser's localStorage under the key `alyxIncomeManager`.
+**Primary storage:** Browser localStorage under the key `alyxIncomeManager`
 
-**No data is ever sent to any server** - everything stays on your computer.
+**Cloud backup (optional):** Google Drive using the hidden app folder (`drive.appdata` scope). This is opt-in during setup. If enabled:
+- Data auto-syncs to Drive 5 seconds after changes
+- On app open, checks for newer data in Drive and prompts to restore
+- Works across devices (same Google account)
+- Your data stays private - only this app can access its app folder
+
+**Without Google Drive:** Data exists only in your browser. Clearing browser data = data loss.
 
 ### Offline Support
 
@@ -361,12 +386,12 @@ When you download a new version:
 
 ## Privacy & Security
 
-- **100% Local**: All data stored locally in your browser
-- **No Data Transmission**: No data sent to any server - everything stays on your device
+- **Local-First**: All data stored locally in your browser by default
+- **Optional Cloud Backup**: Google Drive backup is opt-in. If enabled, only your data goes to Drive (in a private app folder only this app can access)
 - **No Tracking**: No analytics or tracking code
-- **No Cloud**: No accounts, no sign-ups, no cloud storage
-- **Portable**: Just backup your JSON files to take your data anywhere
-- **Hosted on GitHub Pages**: The app code is delivered from GitHub, but all your financial data stays in your browser's local storage
+- **No Accounts**: No sign-ups required. Google sign-in is optional for backup only
+- **Portable**: Export JSON backups anytime to take your data anywhere
+- **Open Infrastructure**: App hosted on GitHub Pages, auth handled by Cloudflare Workers, backup on Google Drive - all services you can verify
 
 ## Support & Feedback
 
@@ -375,10 +400,10 @@ This is a custom-built application. Keep your JSON backups safe!
 ### Common Questions
 
 **Q: Can I use this on multiple computers?**
-A: Yes, but you'll need to manually transfer your data using JSON backups (Settings → Backup Data).
+A: Yes! If you enable Google Drive backup, your data syncs automatically. Otherwise, transfer manually using JSON backups (Settings → Backup Data).
 
-**Q: I was using localhost - where did my data go?**
-A: Browser data is stored separately for each domain. Data from `http://localhost:8000` won't appear at `https://matmcfad.github.io/Alyx-Tax-manager/`. Export your data from localhost (Settings → Backup Data), then import it at the GitHub Pages URL (Settings → Import Backup).
+**Q: I was using localhost or a different domain - where did my data go?**
+A: Browser data is stored separately for each domain. Data from `http://localhost:8000` won't appear at `https://app.therapytaxapp.work`. Export your data from the old location (Settings → Backup Data), then import it at the new URL (Settings → Import Backup). If you have Google Drive backup enabled, your data syncs automatically across domains.
 
 **Q: What if I miss entering a week?**
 A: No problem! The Dashboard will alert you and you can enter missed weeks anytime.

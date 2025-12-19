@@ -170,11 +170,131 @@ The app needs to function when there's no internet connection. Users might be en
 
 ---
 
+## Infrastructure Architecture
+
+This app has infrastructure beyond the codebase that isn't obvious from reading the source.
+
+### Domain: `therapytaxapp.work`
+
+Purchased and managed on **Cloudflare** (not Namecheap like the old `matmcfad.com` domain).
+
+| Subdomain | Points To | Purpose |
+|-----------|-----------|---------|
+| `app.therapytaxapp.work` | GitHub Pages | The main app (this repo) |
+| `auth.therapytaxapp.work` | Cloudflare Worker | OAuth backend for Google Drive |
+
+### Why Two Subdomains?
+
+Browser security. The auth worker sets session cookies. For cookies to work cross-origin, both the app and auth service must share the same "registrable domain" (`therapytaxapp.work`). This makes them first-party cookies instead of third-party cookies (which browsers increasingly block).
+
+### Cloudflare Worker: `alyx-tax-auth`
+
+**Location:** `workers/auth-worker/` in this repo
+
+**What it does:** Handles Google OAuth for Drive backup. The browser can't safely store Google's `client_secret`, so the worker does the token exchange server-side and stores refresh tokens in Cloudflare KV.
+
+**Deployed at:** `auth.therapytaxapp.work` (custom domain) and `alyx-tax-auth.mcfadden-matthew.workers.dev`
+
+**Endpoints:**
+| Path | Purpose |
+|------|---------|
+| `/auth/login` | Redirects to Google consent screen |
+| `/auth/callback` | Receives OAuth code, exchanges for tokens |
+| `/auth/token` | Returns fresh access token (uses stored refresh token) |
+| `/auth/logout` | Clears session |
+| `/auth/status` | Checks if user has valid session |
+
+**Secrets (set via `wrangler secret put`):**
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+
+**KV Namespace:** `alyx-tax-tokens` (stores refresh tokens keyed by session ID)
+
+### Cloudflare DNS Records
+
+In Cloudflare Dashboard → `therapytaxapp.work` → DNS:
+
+| Type | Name | Target | Proxy |
+|------|------|--------|-------|
+| CNAME | `app` | `mcfadden-matthew.github.io` | DNS only (gray) |
+| CNAME | `auth` | *(auto-created by Worker custom domain)* | Proxied (orange) |
+
+**Important:** The `app` record must be "DNS only" (not proxied) because GitHub Pages requires direct DNS resolution for SSL certificates.
+
+### Google Cloud Console
+
+**Project:** Alyx Tax Manager
+
+**OAuth Client ID:** Web application type
+
+**Authorized JavaScript Origins:**
+- `https://app.therapytaxapp.work`
+
+**Authorized Redirect URIs:**
+- `https://auth.therapytaxapp.work/auth/callback`
+
+### GitHub Configuration
+
+**GitHub Pages:**
+- Source: `main` branch, root folder
+- Custom domain: `app.therapytaxapp.work`
+- HTTPS enforced
+
+**GitHub Actions:** `.github/workflows/deploy-worker.yml` auto-deploys the worker when `workers/auth-worker/**` changes.
+
+**Repository Secrets needed for auto-deploy:**
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+### Auth Flow Diagram
+
+```
+User clicks "Connect Google Drive"
+        ↓
+Browser redirects to auth.therapytaxapp.work/auth/login
+        ↓
+Worker redirects to Google consent screen
+        ↓
+User approves → Google redirects to auth.therapytaxapp.work/auth/callback
+        ↓
+Worker exchanges code for tokens (using client_secret)
+Worker stores refresh_token in KV
+Worker sets session cookie
+Worker redirects to app.therapytaxapp.work?auth=success
+        ↓
+App detects ?auth=success, calls /auth/token
+Worker uses refresh_token to get fresh access_token
+App uses access_token for Drive API calls
+        ↓
+(Later) Token expires after 1 hour
+App calls /auth/token again → Worker refreshes automatically
+No user interaction needed (no popups!)
+```
+
+### If Things Break
+
+**"Session expired" errors:**
+- Check if cookies are being set (browser dev tools → Application → Cookies)
+- Verify `ALLOWED_ORIGIN` in `wrangler.toml` matches the app domain exactly
+
+**"redirect_uri_mismatch" from Google:**
+- The redirect URI in Google Console must match exactly: `https://auth.therapytaxapp.work/auth/callback`
+
+**Worker not deploying:**
+- Check GitHub Actions logs
+- Verify `CLOUDFLARE_API_TOKEN` has "Edit Cloudflare Workers" permission
+
+**DNS not resolving:**
+- New DNS records take up to 48 hours (usually minutes)
+- GitHub Pages SSL cert provisioning can take 15+ minutes
+
+---
+
 ## Quick Reference
 
 ### Running the App
 
-- **Web (recommended):** https://matmcfad.github.io/Alyx-Tax-manager/
+- **Web (recommended):** https://app.therapytaxapp.work
 - **Local development:** Run `START.bat` (Windows) or `START.sh` (Mac/Linux)
 - **Don't open index.html directly** - PWA features require a web server
 
