@@ -94,7 +94,7 @@
 
         // Google Drive Backup Constants
         // Auth handled by Cloudflare Worker - see workers/auth-worker/
-        const AUTH_WORKER_URL = 'https://auth.matmcfad.com';
+        const AUTH_WORKER_URL = 'https://auth.therapytaxapp.work';
         const DRIVE_BACKUP_FILENAME = 'alyx-tax-manager-2025-backup.json';
         const SYNC_DEBOUNCE_MS = 5000; // Wait 5 seconds after last change before syncing
 
@@ -1084,7 +1084,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     const urlParams = new URLSearchParams(window.location.search);
                     const authStatus = urlParams.get('auth');
 
-                    if (authStatus === 'success') {
+                    if (authStatus === 'success' && appData?.settings?.setupComplete) {
+                        // Only handle auth callback if setup is complete.
+                        // During setup, SetupFlow handles the callback to check for existing backups.
+
                         // Clean up URL
                         window.history.replaceState({}, '', window.location.pathname);
 
@@ -1114,6 +1117,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             }
                         } catch (error) {
                             console.error('OAuth callback error:', error);
+                            // Clean up on failure
+                            localStorage.setItem('googleConnected', 'false');
+                            localStorage.removeItem('googleAccessToken');
+                            localStorage.removeItem('googleTokenExpiry');
                             updateSyncState({
                                 status: 'error',
                                 error: 'Authentication failed. Please try again.'
@@ -1122,7 +1129,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         return;
                     }
 
-                    if (authStatus === 'error') {
+                    if (authStatus === 'error' && appData?.settings?.setupComplete) {
+                        // Only handle auth error if setup is complete.
+                        // During setup, SetupFlow handles auth errors.
                         const message = urlParams.get('message') || 'Authentication failed';
                         window.history.replaceState({}, '', window.location.pathname);
                         updateSyncState({
@@ -1666,6 +1675,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             }
                         } catch (error) {
                             console.error('Error during auth callback:', error);
+                            // Clean up on failure
+                            localStorage.setItem('googleConnected', 'false');
+                            localStorage.removeItem('googleAccessToken');
+                            localStorage.removeItem('googleTokenExpiry');
                             setGoogleSignInError('Failed to complete sign-in: ' + error.message);
                             setGoogleSignInStatus('error');
                         }
@@ -3796,6 +3809,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 // Clear all localStorage
                 localStorage.removeItem(STORAGE_KEY);
                 localStorage.removeItem('googleConnected');
+                localStorage.removeItem('googleAccessToken');
                 localStorage.removeItem('googleTokenExpiry');
                 localStorage.removeItem('pendingDriveSync');
                 localStorage.removeItem('lastKnownDriveModifiedTime');
