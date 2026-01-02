@@ -1,8 +1,22 @@
 # Alyx Income Tax Manager - Development Guide
 
+> **ARCHIVED 2025 VERSION**
+>
+> This is the **frozen 2025 tax year archive**, deployed at `2025.therapytaxapp.work`.
+> Active development has moved to the main repo (2026 version) at `app.therapytaxapp.work`.
+>
+> **Key feature:** Year-End Close - generates final 2025 report for handoff to 2026 app.
+>
+> **Maintenance scope:** Bug fixes only. No new features, no refactoring.
+> Only fix issues that break Year-End Close or data integrity.
+
+---
+
 ## What This Is
 
 A Progressive Web App for managing weekly income, business expenses, and tax savings for a self-employed therapist (sole proprietor, single filer). Built as a single-file React application with local-first storage and Google Drive backup.
+
+**This is the 2025 tax year archive.** It contains all 2025 tax constants, week dates, and the Year-End Close feature for generating final reports. The 2026 app at `app.therapytaxapp.work` reads these reports to calculate safe harbor amounts.
 
 **Who it's for:** One person - Alyx Steadman Therapy PLLC
 
@@ -187,7 +201,8 @@ Purchased and managed on **Cloudflare** (not Namecheap like the old `matmcfad.co
 
 | Subdomain | Points To | Purpose |
 |-----------|-----------|---------|
-| `app.therapytaxapp.work` | GitHub Pages | The main app (this repo) |
+| `2025.therapytaxapp.work` | GitHub Pages | This archived 2025 app |
+| `app.therapytaxapp.work` | GitHub Pages | The main 2026 app |
 | `auth.therapytaxapp.work` | Cloudflare Worker | OAuth backend for Google Drive |
 
 ### Why Two Subdomains?
@@ -223,10 +238,11 @@ In Cloudflare Dashboard → `therapytaxapp.work` → DNS:
 
 | Type | Name | Target | Proxy |
 |------|------|--------|-------|
+| CNAME | `2025` | `mcfadden-matthew.github.io` | DNS only (gray) |
 | CNAME | `app` | `mcfadden-matthew.github.io` | DNS only (gray) |
 | CNAME | `auth` | *(auto-created by Worker custom domain)* | Proxied (orange) |
 
-**Important:** The `app` record must be "DNS only" (not proxied) because GitHub Pages requires direct DNS resolution for SSL certificates.
+**Important:** The `2025` and `app` records must be "DNS only" (not proxied) because GitHub Pages requires direct DNS resolution for SSL certificates.
 
 ### Google Cloud Console
 
@@ -235,6 +251,7 @@ In Cloudflare Dashboard → `therapytaxapp.work` → DNS:
 **OAuth Client ID:** Web application type
 
 **Authorized JavaScript Origins:**
+- `https://2025.therapytaxapp.work`
 - `https://app.therapytaxapp.work`
 
 **Authorized Redirect URIs:**
@@ -242,9 +259,9 @@ In Cloudflare Dashboard → `therapytaxapp.work` → DNS:
 
 ### GitHub Configuration
 
-**GitHub Pages:**
-- Source: `main` branch, root folder
-- Custom domain: `app.therapytaxapp.work`
+**GitHub Pages (this repo):**
+- Source: `2025` branch, root folder
+- Custom domain: `2025.therapytaxapp.work`
 - HTTPS enforced
 
 **GitHub Actions:** `.github/workflows/deploy-worker.yml` auto-deploys the worker when `workers/auth-worker/**` changes.
@@ -267,7 +284,7 @@ User approves → Google redirects to auth.therapytaxapp.work/auth/callback
 Worker exchanges code for tokens (using client_secret)
 Worker stores refresh_token in KV
 Worker sets session cookie
-Worker redirects to app.therapytaxapp.work?auth=success
+Worker redirects to 2025.therapytaxapp.work?auth=success
         ↓
 App detects ?auth=success, calls /auth/token
 Worker uses refresh_token to get fresh access_token
@@ -301,7 +318,8 @@ No user interaction needed (no popups!)
 
 ### Running the App
 
-- **Web (recommended):** https://app.therapytaxapp.work
+- **Web (this 2025 archive):** https://2025.therapytaxapp.work
+- **Web (2026 main app):** https://app.therapytaxapp.work
 - **Local development:** Run `START.bat` (Windows) or `START.sh` (Mac/Linux)
 - **Don't open index.html directly** - PWA features require a web server
 
@@ -329,9 +347,13 @@ No user interaction needed (no popups!)
 | `calculateSmartTaxSavings()` | Weekly savings recommendation algorithm |
 | `useSyncManager()` | Google Drive sync hook |
 | `saveToLocalStorage()` / `loadFromLocalStorage()` | Persistence |
+| `generateYearEndReport()` | Creates final 2025 report JSON for 2026 handoff |
+| `saveYearEndReport()` | Saves year-end report to Google Drive |
 
 ---
 
 ## When You're Unsure
 
 If you're making a change and you're not sure if it could affect financial calculations, data integrity, or user trust: ask. It's better to discuss than to ship a bug that costs real money.
+
+**Remember: This is an archived version.** Most changes should not be made here. If something needs to be fixed, make sure it's a genuine bug affecting the 2025 data or Year-End Close feature, not an enhancement that belongs in the 2026 app.
