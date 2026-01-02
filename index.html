@@ -96,6 +96,7 @@
         // Auth handled by Cloudflare Worker - see workers/auth-worker/
         const AUTH_WORKER_URL = 'https://auth.therapytaxapp.work';
         const DRIVE_BACKUP_FILENAME = 'alyx-tax-manager-2025-backup.json';
+        const YEAR_END_REPORT_FILENAME = 'alyx-tax-manager-2025-final-report.json';
         const SYNC_DEBOUNCE_MS = 5000; // Wait 5 seconds after last change before syncing
 
         // ============================================================================
@@ -738,6 +739,95 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         }
 
         // ============================================================================
+        // YEAR-END REPORT FUNCTIONS
+        // ============================================================================
+
+        /**
+         * Generate a comprehensive year-end report for 2025
+         * This report is saved to Google Drive and read by the 2026 app
+         * for prior year summary and safe harbor calculation
+         * @param {object} appData - The complete app data state
+         * @returns {object} Year-end report object
+         */
+        function generateYearEndReport(appData) {
+            const completedWeeks = appData.weeks.filter(w => w.income !== null);
+            const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
+
+            // Calculate final tax figures
+            const grossIncome = completedWeeks.reduce((sum, w) => sum + (w.income || 0), 0);
+            const finalTax = calculateTotalTax(grossIncome, annualExpenses, appData.settings.standardDeduction);
+
+            return {
+                reportVersion: "1.0",
+                generatedAt: new Date().toISOString(),
+                taxYear: 2025,
+
+                // Summary totals
+                summary: {
+                    grossIncome: grossIncome,
+                    totalBusinessExpenses: completedWeeks.reduce((sum, w) => sum + (w.business || 0), 0),
+                    totalTaxSaved: completedWeeks.reduce((sum, w) => sum + (w.tax || 0), 0),
+                    totalPaycheck: completedWeeks.reduce((sum, w) => sum + (w.paycheck || 0), 0),
+                    weeksRecorded: completedWeeks.length
+                },
+
+                // Final tax calculation (for 2026 safe harbor)
+                finalTaxCalculation: {
+                    grossIncome: finalTax.grossIncome,
+                    businessExpenses: finalTax.businessExpenses,
+                    netProfit: finalTax.netProfit,
+                    seTaxDeduction: finalTax.seTaxDeduction,
+                    adjustedIncome: finalTax.adjustedIncome,
+                    taxableIncome: finalTax.taxableIncome,
+                    seTax: finalTax.seTax,
+                    incomeTax: finalTax.incomeTax,
+                    qbiDeduction: finalTax.qbiDeduction,
+                    totalTax: finalTax.totalTax,
+                    effectiveRate: finalTax.grossIncome > 0 ? finalTax.totalTax / finalTax.grossIncome : 0
+                },
+
+                // Quarterly payment history
+                quarterlyPayments: appData.quarterlyPayments.map(q => ({
+                    quarter: q.quarter,
+                    period: q.period,
+                    due: q.due,
+                    amount: q.amount,
+                    paid: q.paid,
+                    datePaid: q.datePaid
+                })),
+
+                // Full weekly data for reference
+                weeks: completedWeeks.map(w => ({
+                    week: w.week,
+                    date: w.date,
+                    income: w.income,
+                    business: w.business,
+                    tax: w.tax,
+                    paycheck: w.paycheck,
+                    notes: w.notes || '',
+                    status: w.status
+                })),
+
+                // Settings for reference
+                settings: {
+                    tax2024Total: appData.settings.tax2024Total,
+                    quarterlyPayment: appData.settings.quarterlyPayment,
+                    standardDeduction: appData.settings.standardDeduction,
+                    startingTaxSavingsBalance: appData.settings.startingTaxSavingsBalance,
+                    businessName: appData.settings.businessName
+                },
+
+                // Expense configuration
+                expenseBudget: appData.expenses.budget,
+                expenseDueDates: appData.expenses.dueDates,
+
+                // Transaction history (if any)
+                businessTransactions: appData.businessTransactions || [],
+                taxTransactions: appData.taxTransactions || []
+            };
+        }
+
+        // ============================================================================
         // SYNC MANAGER HOOK
         // ============================================================================
 
@@ -938,6 +1028,62 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     modifiedTime: existingFile.modifiedTime
                 };
             }, [findBackupFile, driveApiRequest]);
+
+            // Save year-end report to a separate file in Drive
+            // This file is read by the 2026 app for prior year data
+            const saveYearEndReport = useCallback(async (report) => {
+                try {
+                    const token = await ensureValidToken();
+                    if (!token) {
+                        throw new Error('Not authenticated with Google Drive');
+                    }
+
+                    // Check if report file already exists
+                    const searchResponse = await fetch(
+                        `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${YEAR_END_REPORT_FILENAME}'&fields=files(id,name)`,
+                        { headers: { 'Authorization': `Bearer ${token}` } }
+                    );
+                    const searchData = await searchResponse.json();
+                    const existingFile = searchData.files?.[0];
+
+                    const metadata = {
+                        name: YEAR_END_REPORT_FILENAME,
+                        mimeType: 'application/json'
+                    };
+
+                    if (!existingFile) {
+                        metadata.parents = ['appDataFolder'];
+                    }
+
+                    const form = new FormData();
+                    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                    form.append('file', new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+
+                    const uploadUrl = existingFile
+                        ? `https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=multipart`
+                        : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+
+                    const method = existingFile ? 'PATCH' : 'POST';
+
+                    const uploadResponse = await fetch(uploadUrl, {
+                        method: method,
+                        headers: { 'Authorization': `Bearer ${token}` },
+                        body: form
+                    });
+
+                    if (!uploadResponse.ok) {
+                        const error = await uploadResponse.json().catch(() => ({}));
+                        throw new Error(error.error?.message || `Upload failed: ${uploadResponse.status}`);
+                    }
+
+                    const result = await uploadResponse.json();
+                    return { success: true, fileId: result.id };
+
+                } catch (error) {
+                    console.error('Failed to save year-end report:', error);
+                    return { success: false, error: error.message };
+                }
+            }, [ensureValidToken]);
 
             // Queued sync operation - prevents race conditions
             const queueSync = useCallback(async (operation) => {
@@ -1320,6 +1466,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 // For setup flow and direct API access
                 findBackupFile,
                 driveApiRequest,
+                saveYearEndReport,
 
                 // Legacy compatibility setters
                 setGoogleAccessToken: (token) => updateSyncState({ accessToken: token }),
@@ -1350,6 +1497,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 disconnect: handleGoogleSignOut,
                 findBackupFile,
                 driveApiRequest,
+                saveYearEndReport,
                 setGoogleAccessToken,
                 setDriveStatus,
                 setLastSyncTime,
@@ -1539,6 +1687,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 findBackupFile={findBackupFile}
                                 driveApiRequest={driveApiRequest}
                                 googleAccessToken={googleAccessToken}
+                                saveYearEndReport={saveYearEndReport}
                             />
                         )}
                     </div>
@@ -3893,7 +4042,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             handleGoogleSignOut,
             findBackupFile,
             driveApiRequest,
-            googleAccessToken
+            googleAccessToken,
+            saveYearEndReport
         }) {
             const [editMode, setEditMode] = useState(false);
             const [formData, setFormData] = useState({
@@ -3905,6 +4055,31 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [deferredPrompt, setDeferredPrompt] = useState(null);
             const [isInstalled, setIsInstalled] = useState(false);
             const [catchUpCsvFile, setCatchUpCsvFile] = useState(null);
+            const [yearEndCloseStatus, setYearEndCloseStatus] = useState(null); // null, 'saving', 'success', 'error'
+
+            // Handle Year-End Close
+            const handleYearEndClose = async () => {
+                if (!window.confirm('Generate your 2025 Year-End Report?\n\nThis will save all your 2025 financial data to Google Drive. The 2026 app will use this report to display your 2025 summary and calculate your safe harbor amount.')) {
+                    return;
+                }
+
+                setYearEndCloseStatus('saving');
+
+                try {
+                    const report = generateYearEndReport(appData);
+                    const result = await saveYearEndReport(report);
+
+                    if (result.success) {
+                        setYearEndCloseStatus('success');
+                    } else {
+                        setYearEndCloseStatus('error');
+                        console.error('Year-end close failed:', result.error);
+                    }
+                } catch (error) {
+                    setYearEndCloseStatus('error');
+                    console.error('Year-end close error:', error);
+                }
+            };
 
             // Listen for install prompt
             React.useEffect(() => {
@@ -4534,6 +4709,55 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             </div>
                         </div>
                     </div>
+
+                    {/* Year-End Close Section */}
+                    {googleAccessToken && appData.settings.setupComplete && (
+                        <div className="bg-white rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">YEAR-END CLOSE (2025)</h2>
+
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                                <p className="text-amber-800 text-sm">
+                                    <strong>Important:</strong> This generates a final report of your 2025 tax year
+                                    and saves it to Google Drive. The 2026 app will use this report to display your
+                                    2025 summary and calculate your safe harbor amount.
+                                </p>
+                            </div>
+
+                            <div className="mb-4">
+                                <h3 className="font-semibold text-gray-700 mb-2">What will be saved:</h3>
+                                <ul className="text-sm text-gray-600 list-disc list-inside space-y-1">
+                                    <li>Total gross income: ${appData.weeks.filter(w => w.income !== null).reduce((sum, w) => sum + (w.income || 0), 0).toLocaleString()}</li>
+                                    <li>Weeks recorded: {appData.weeks.filter(w => w.income !== null).length} of 52</li>
+                                    <li>Quarterly payments: {appData.quarterlyPayments.filter(q => q.paid).length} of 4 paid</li>
+                                    <li>All weekly income and expense data</li>
+                                    <li>Final tax calculation for safe harbor</li>
+                                </ul>
+                            </div>
+
+                            {yearEndCloseStatus === 'success' ? (
+                                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                    <p className="text-green-800">
+                                        <span className="font-bold">Success!</span> Your 2025 Year-End Report has been saved to Google Drive.
+                                        You can now switch to the 2026 app when ready.
+                                    </p>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={handleYearEndClose}
+                                    disabled={yearEndCloseStatus === 'saving'}
+                                    className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 transition-colors font-medium"
+                                >
+                                    {yearEndCloseStatus === 'saving' ? 'Saving Report...' : 'Generate 2025 Year-End Report'}
+                                </button>
+                            )}
+
+                            {yearEndCloseStatus === 'error' && (
+                                <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
+                                    <p className="text-red-800">Failed to save report. Please check your internet connection and try again.</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {/* About */}
                     <div className="bg-white rounded-lg shadow-md p-6">
