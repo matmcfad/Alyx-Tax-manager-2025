@@ -12,7 +12,10 @@
       "Bash(cat:*)",
       "WebSearch",
       "Bash(git pull:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(git fetch:*)",
+      "Bash(git branch:*)",
+      "Bash(git config:*)"
     ],
     "deny": [],
     "ask": []
