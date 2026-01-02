@@ -312,7 +312,10 @@
                     percentage: (weeklyTarget / weeklyIncome) * 100,
                     status: 'baseline',
                     explanation: 'First week - using safe harbor baseline',
-                    projectedTax: settings.tax2024Total
+                    projectedTax: settings.tax2024Total,
+                    totalNeeded: settings.tax2024Total,
+                    stillNeed: settings.tax2024Total,
+                    weeksRemaining: 52
                 };
             }
 
@@ -2958,7 +2961,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         </button>
                                     </div>
 
-                                    {showBusinessDetails && calculatedSplit.businessReserve && (
+                                    {showBusinessDetails && calculatedSplit.rolling4Week && (
                                         <div className="mt-3 p-4 bg-gray-50 rounded-lg text-sm">
                                             <div className="space-y-2">
                                                 <div>
