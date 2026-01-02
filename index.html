@@ -2215,8 +2215,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [manualTax, setManualTax] = useState('');
             const [manualPaycheck, setManualPaycheck] = useState('');
 
-            const currentWeek = getCurrentWeek();
-            const currentWeekData = appData.weeks.find(w => w.week === currentWeek);
+            const rawCurrentWeek = getCurrentWeek();
+            // Clamp to valid range (1-52) to handle year boundary edge cases
+            const currentWeek = Math.max(1, Math.min(52, rawCurrentWeek));
+            const currentWeekData = appData.weeks.find(w => w.week === currentWeek) || appData.weeks[0];
 
             // Calculate YTD totals
             const completedWeeks = appData.weeks.filter(w => w.income !== null);
