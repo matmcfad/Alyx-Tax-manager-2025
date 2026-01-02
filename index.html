@@ -411,9 +411,15 @@
 
         /**
          * Get current week number
+         * For this 2025 archive: returns 52 if we're past 2025 (year is complete)
          */
         function getCurrentWeek() {
-            return getWeekNumber(new Date());
+            const today = new Date();
+            // If we're past 2025, the year is complete - return week 52
+            if (today.getFullYear() > 2025) {
+                return 52;
+            }
+            return getWeekNumber(today);
         }
 
         /**
@@ -2220,6 +2226,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const currentWeek = Math.max(1, Math.min(52, rawCurrentWeek));
             const currentWeekData = appData.weeks.find(w => w.week === currentWeek) || appData.weeks[0];
 
+            // 2025 Archive Lock - check if we're past the 2025 tax year
+            const isPast2025 = new Date().getFullYear() > 2025;
+
             // Calculate YTD totals
             const completedWeeks = appData.weeks.filter(w => w.income !== null);
             const weeksElapsed = completedWeeks.length;
@@ -2244,9 +2253,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const nextQuarterly = appData.quarterlyPayments.find(q => !q.paid);
             const daysUntilNextPayment = nextQuarterly ? getDaysUntil(nextQuarterly.due) : null;
 
-            // Missing weeks
+            // Missing weeks - when past 2025, ALL unrecorded weeks are "missing"
             const missingWeeks = appData.weeks.filter(w =>
-                w.week < currentWeek && w.income === null
+                w.income === null && (isPast2025 || w.week < currentWeek)
             );
 
             const handleCalculateSplit = () => {
@@ -2589,7 +2598,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     {/* Header */}
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h1 className="text-2xl font-bold text-gray-800">{appData.settings.businessName}</h1>
-                        <p className="text-gray-600">Week {currentWeek} of 52 ({formatDate(currentWeekData.date)})</p>
+                        <p className="text-gray-600">
+                            {isPast2025
+                                ? `2025 Tax Year Archive - ${completedWeeks.length} of 52 weeks recorded`
+                                : `Week ${currentWeek} of 52 (${formatDate(currentWeekData.date)})`
+                            }
+                        </p>
                     </div>
 
                     {/* Missing Weeks Alert */}
@@ -2899,7 +2913,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     </div>
 
                     {/* Enter Weekly Income */}
-                    {!showSplit && currentWeekData.income === null && (
+                    {!isPast2025 && !showSplit && currentWeekData.income === null && (
                         <div className="bg-white rounded-lg shadow-md p-6">
                             <h2 className="text-xl font-bold text-gray-800 mb-4">💵 ENTER THIS WEEK'S INCOME</h2>
                             <p className="text-gray-600 mb-4">
@@ -2929,6 +2943,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     </button>
                                 </div>
                             </div>
+                        </div>
+                    )}
+
+                    {/* 2025 Archive Message - shown when past 2025 */}
+                    {isPast2025 && !showSplit && (
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                            <h2 className="text-xl font-bold text-blue-800 mb-2">📅 2025 Tax Year Complete</h2>
+                            <p className="text-blue-700">
+                                {missingWeeks.length > 0
+                                    ? `You have ${missingWeeks.length} week${missingWeeks.length > 1 ? 's' : ''} to fill in. Use "Enter Missing Weeks" below.`
+                                    : "All weeks recorded. Generate your Year-End Report in Settings."
+                                }
+                            </p>
                         </div>
                     )}
 
@@ -3472,9 +3499,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             // Weekly savings guidance
             const today = new Date();
-            const yearEnd = new Date(today.getFullYear(), 11, 31);
-            const weeksRemaining = Math.max(1, Math.ceil((yearEnd - today) / (7 * 24 * 60 * 60 * 1000)));
-            const requiredWeeklySavings = stillNeeded / weeksRemaining;
+            const isPast2025 = today.getFullYear() > 2025;
+            // If past 2025, year is complete - 0 weeks remaining (avoid divide by zero with || 1)
+            const yearEnd = new Date(2025, 11, 31);
+            const weeksRemaining = isPast2025 ? 0 : Math.max(1, Math.ceil((yearEnd - today) / (7 * 24 * 60 * 60 * 1000)));
+            const requiredWeeklySavings = weeksRemaining > 0 ? stillNeeded / weeksRemaining : stillNeeded;
 
             // Next payment coverage status
             const nextPaymentCovered = nextPayment ? taxSavingsBalance >= nextPayment.amount : true;
@@ -3914,7 +3943,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 }, 0);
             });
 
-            const currentMonth = new Date().getMonth();
+            const today = new Date();
+            const isPast2025 = today.getFullYear() > 2025;
+            // If past 2025, show December (month 11) as the reference month
+            const currentMonth = isPast2025 ? 11 : today.getMonth();
             const nextMonth = (currentMonth + 1) % 12;
             const averageMonthly = monthlyTotals.reduce((sum, val) => sum + val, 0) / 12;
             const totalYear = monthlyTotals.reduce((sum, val) => sum + val, 0);
