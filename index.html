@@ -114,12 +114,13 @@
                 return { valid: false, error: 'Backup data is empty or invalid' };
             }
 
-            // Check weeks array
+            // Check weeks array - app always creates 52 week objects upfront
+            // (unfilled weeks have income: null, but the entries exist)
             if (!Array.isArray(data.weeks)) {
                 return { valid: false, error: 'Missing or invalid weeks array' };
             }
             if (data.weeks.length !== 52) {
-                return { valid: false, error: `Expected 52 weeks, found ${data.weeks.length}` };
+                return { valid: false, error: `Backup has ${data.weeks.length} weeks (expected 52) - data may be corrupted` };
             }
 
             // Check settings object has required fields
