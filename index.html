@@ -9,6 +9,7 @@
     <meta name="description" content="Income allocation and tax tracking for self-employed therapists">
     <meta name="theme-color" content="#2563eb">
     <link rel="manifest" href="./manifest.json">
+    <link rel="icon" href="./icon-192.png" type="image/png">
 
     <!-- Apple Touch Icon -->
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1710,6 +1711,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 className="ml-4 underline hover:no-underline"
                             >
                                 Go to Settings
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Sync error banner - prominent warning when Google Drive session expired */}
+                    {syncError && driveStatus === 'error' && (
+                        <div className="bg-amber-500 text-white px-4 py-3 text-center">
+                            <span className="font-medium">⚠️ Google Drive sync disconnected.</span>
+                            <button
+                                onClick={() => setCurrentScreen('settings')}
+                                className="ml-4 underline hover:no-underline"
+                            >
+                                Reconnect in Settings
                             </button>
                         </div>
                     )}
