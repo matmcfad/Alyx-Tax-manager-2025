@@ -100,6 +100,48 @@
         const SYNC_DEBOUNCE_MS = 5000; // Wait 5 seconds after last change before syncing
 
         // ============================================================================
+        // DATA VALIDATION
+        // ============================================================================
+
+        /**
+         * Validate backup data structure before restoring
+         * Prevents crashes from corrupted or incomplete backups
+         * @param {object} data - The data to validate
+         * @returns {object} { valid: boolean, error?: string }
+         */
+        function validateBackupData(data) {
+            if (!data || typeof data !== 'object') {
+                return { valid: false, error: 'Backup data is empty or invalid' };
+            }
+
+            // Check weeks array
+            if (!Array.isArray(data.weeks)) {
+                return { valid: false, error: 'Missing or invalid weeks array' };
+            }
+            if (data.weeks.length !== 52) {
+                return { valid: false, error: `Expected 52 weeks, found ${data.weeks.length}` };
+            }
+
+            // Check settings object has required fields
+            if (!data.settings || typeof data.settings !== 'object') {
+                return { valid: false, error: 'Missing settings object' };
+            }
+            const requiredSettings = ['tax2024Total', 'standardDeduction', 'businessName'];
+            for (const field of requiredSettings) {
+                if (data.settings[field] === undefined) {
+                    return { valid: false, error: `Missing required setting: ${field}` };
+                }
+            }
+
+            // Check quarterly payments
+            if (!Array.isArray(data.quarterlyPayments) || data.quarterlyPayments.length !== 4) {
+                return { valid: false, error: 'Missing or invalid quarterly payments' };
+            }
+
+            return { valid: true };
+        }
+
+        // ============================================================================
         // TAX CALCULATION FUNCTIONS
         // ============================================================================
 
@@ -1127,13 +1169,14 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         const backup = await downloadFromDrive();
                         if (backup && backup.data) {
                             // Validate data structure before setting
-                            if (backup.data.settings && backup.data.weeks) {
+                            const validation = validateBackupData(backup.data);
+                            if (validation.valid) {
                                 setAppData(backup.data);
                                 localStorage.setItem('lastKnownDriveModifiedTime', backup.modifiedTime);
                                 // Record pulled data as synced
                                 lastSyncedDataRef.current = JSON.stringify(backup.data);
                             } else {
-                                throw new Error('Invalid backup data structure');
+                                throw new Error(`Invalid backup: ${validation.error}`);
                             }
                         }
                     }
@@ -1525,7 +1568,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             useEffect(() => {
                 const savedData = loadFromLocalStorage();
 
-                if (savedData && savedData.settings && savedData.settings.setupComplete) {
+                // Validate localStorage data before using
+                const validation = savedData ? validateBackupData(savedData) : { valid: false };
+                if (validation.valid && savedData.settings.setupComplete) {
                     let data = savedData;
 
                     // Migration: v1 -> v2 (fix week dates to Friday)
